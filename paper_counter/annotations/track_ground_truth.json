@@ -1,0 +1,41 @@
+{
+  "coordinate_space": "result_overlay",
+  "overlay_y_tolerance_px": 8,
+  "ambiguity_margin_px": 2,
+  "images": {
+    "4-1.bmp": {"count": 28, "false_tracks": [695], "missed_true_tracks": [575]},
+    "4-2.bmp": {"count": 28, "false_tracks": [610], "true_tracks": []},
+    "淋膜纸1.bmp": {"count": 41, "false_tracks": [], "missed_true_tracks": [135]},
+    "白板白底1.bmp": {"count": 51, "false_tracks": [1540], "true_tracks": []},
+    "练功卷1.bmp": {
+      "count": 102,
+      "false_tracks": [],
+      "missed_true_tracks": [160, 920],
+      "notes": {"160": "第一张纸倾斜，前半段约Y=160，后半段约Y=170"}
+    },
+    "覆膜铜板3-1.bmp": {"count": 134, "false_tracks": [135, 1925, 2210, 2785], "missed_true_tracks": [735]},
+    "覆膜铜板3-2.bmp": {
+      "count": 134,
+      "false_tracks": [140, 1910, 1942],
+      "true_tracks": [1950],
+      "missed_true_tracks": [1935],
+      "correctly_rejected_tracks": [2673],
+      "track_match_overrides": {
+        "1910": {"detection_y": 2236},
+        "2673": {"detection_y": 3196.5}
+      }
+    },
+    "金卡纸-1.bmp": {
+      "count": 96,
+      "false_tracks": [2490],
+      "true_tracks": [],
+      "track_match_overrides": {"2490": {"detection_y": 2963}}
+    },
+    "金卡纸-2.bmp": {
+      "count": 96,
+      "false_tracks": [982, 2607, 3073],
+      "true_tracks": [994],
+      "correctly_rejected_tracks": [1027]
+    }
+  }
+}

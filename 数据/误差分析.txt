@@ -1,0 +1,49 @@
+{
+  "4-1.bmp": {
+    "count": 28,
+    "false_tracks": [575]
+    "false_tracks": [695]
+  },
+  "4-2.bmp": {
+    "count": 28,
+    "false_tracks": [575]
+    "false_tracks": [610]
+  },
+  "淋膜纸1.bmp": {
+    "count": 41,
+    "false_tracks": ["135"]
+  },
+  "白板白底1.bmp": {
+    "count": 51,
+    "false_tracks": [1540]
+  }
+  "练功卷1.bmp": {
+    "count": 102,
+    "false_tracks": [160]
+    "false_tracks": [920]
+  }
+  "覆膜铜板3-1.bmp": {
+    "count": 134,
+    "false_tracks": [130]
+    "false_tracks": [730]
+    "false_tracks": [1925]
+    "false_tracks": [2210]
+    "false_tracks": [2785]
+  }
+  "覆膜铜板3-2.bmp": {
+    "count": 134,
+    "false_tracks": [140]
+    "false_tracks": [1910]
+    "false_tracks": [1950]
+  }
+  "金卡纸-1.bmp": {
+    "count": 96,
+    "false_tracks": [2490]
+  }
+  "金卡纸-2.bmp": {
+    "count": 96,
+    "false_tracks": [975]
+    "false_tracks": [2605]
+    "false_tracks": [3073]
+  }
+}

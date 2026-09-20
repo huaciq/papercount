@@ -1,0 +1,6 @@
+# Production evaluation configuration for the terminal track-identity verifier.
+# Unspecified options use CounterConfig defaults, which match default.yaml.
+gradient_polarity: negative
+algorithm: tracks
+final_track_verifier_enabled: true
+final_track_verifier_shadow_mode: false
