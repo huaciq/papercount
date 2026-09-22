@@ -27,10 +27,16 @@ def make_track(peaks: list[StripPeakCandidate], period: float, valid_strip_count
     smoothness = float(np.exp(-config.track_shift_penalty * slope_penalty
                               - config.track_curvature_penalty * curve_penalty))
     # Alternating direction changes are different from a stable tilt or a
-    # smooth bow. Keep the historical continuity gate while rejecting this
-    # characteristic random-jump texture.
+    # smooth bow.  Peak localization is integer-valued, however, so a path
+    # oscillating by one pixel must not be treated like random-jump texture.
+    # Count a reversal only when both adjacent slopes exceed the localization
+    # tolerance expressed as a fraction of the measured paper spacing.
     if len(slopes) > 1:
-        reversal = float(np.mean(slopes[:-1] * slopes[1:] < 0))
+        reversal_threshold = config.track_reversal_amplitude_ratio * period
+        reversal_mask = ((slopes[:-1] * slopes[1:] < 0)
+                         & (np.minimum(np.abs(slopes[:-1]), np.abs(slopes[1:]))
+                            > reversal_threshold))
+        reversal = float(np.mean(reversal_mask))
         if config.track_continuity_geometry_enabled or (reversal > 0.5 and np.ptp(ys) <= 0.30 * period):
             smoothness *= float(np.exp(-config.track_reversal_weight * reversal))
     continuity_geometry = {}

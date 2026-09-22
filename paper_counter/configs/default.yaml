@@ -22,8 +22,9 @@ vote_tolerance_ratio: 0.20
 min_vote_ratio: 0.5
 strip_prominence_ratio: 0.6
 duplicate_ratio: 0.50
-# Reject broad normalization halos; width is measured at half prominence.
-max_peak_width_ratio: 0.50
+# Reject broad normalization halos while retaining slanted paper edges whose
+# per-strip projection reaches about 0.6 of the local paper spacing.
+max_peak_width_ratio: 0.65
 repair_tolerance_ratio: 0.25
 weak_prominence_ratio: 0.5
 repair_min_vote_ratio: 0.5
@@ -240,6 +241,9 @@ identity_low_negative_isolation: 0.25
 identity_min_reject_evidence_families: 2
 identity_score_mad_floor: 0.04
 identity_ambiguous_z: 3.0
+# Closely spaced selected tracks require pairwise morphology adjudication.
+identity_close_competition_gap_ratio: 0.55
+identity_pair_morphology_margin: 0.05
 identity_score_weights:
   template: 0.30
   negative: 0.15

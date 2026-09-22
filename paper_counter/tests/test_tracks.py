@@ -56,6 +56,16 @@ class TrackTests(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertEqual(rejected[0].reason, "low_smoothness")
 
+    def test_one_pixel_peak_localization_jitter_is_not_a_geometry_failure(self):
+        candidate = make_track(
+            [s[0] for s in peaks_at([100, 101, 100, 101, 100, 101, 100, 101])],
+            26, 8, self.cfg,
+        )
+        accepted, rejected = validate_tracks([candidate], self.cfg)
+        self.assertEqual(len(accepted), 1)
+        self.assertFalse(rejected)
+        self.assertGreater(candidate.smoothness_score, self.cfg.min_track_smoothness)
+
     def test_local_threshold_recalls_dim_half(self):
         # Smooth periodic contrast changes by 20x; a single whole-image MAD
         # suppresses the dim section while window statistics follow its scale.

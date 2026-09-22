@@ -207,6 +207,29 @@ class VerifierDecisionTests(unittest.TestCase):
         self.assertEqual(debug["count_after"], 1)
         self.assertFalse(debug["recovery_after_verifier"])
 
+    def test_close_pair_keeps_better_boundary_morphology(self):
+        tracks = [paper_track("body", {0: 100, 1: 100, 2: 100}),
+                  paper_track("edge", {0: 114, 1: 114, 2: 114})]
+        body = self.Feature("AMBIGUOUS_KEEP")
+        edge = self.Feature("REJECT_SECONDARY_TEXTURE")
+        for feature, raw, normalized, positive, negative, families in (
+                (body, .50, .55, -.10, .60, ["template"]),
+                (edge, .70, .75, .45, .65, ["paper_support", "template"])):
+            feature.raw_template_similarity = raw
+            feature.normalized_template_similarity = normalized
+            feature.positive_profile_corr = positive
+            feature.negative_template_similarity = negative
+            feature.template_outlier_z = 8.0
+            feature.local_spacing = 29.0
+            feature.evidence_families = families
+        cfg = CounterConfig(final_track_verifier_shadow_mode=False)
+        kept, rejected, debug = apply_final_track_verifier(
+            tracks, {"body": body, "edge": edge}, cfg)
+        self.assertEqual([track.track_id for track in kept], ["edge"])
+        self.assertEqual([track.track_id for track in rejected], ["body"])
+        self.assertEqual(debug["pair_adjudications"][0]["reason"],
+                         "close_pair_boundary_morphology_swap")
+
 
 if __name__ == "__main__":
     unittest.main()

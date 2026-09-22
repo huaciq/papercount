@@ -192,6 +192,8 @@ class CounterConfig:
     identity_min_reject_evidence_families: int = 2
     identity_score_mad_floor: float = 0.04
     identity_ambiguous_z: float = 3.0
+    identity_close_competition_gap_ratio: float = 0.55
+    identity_pair_morphology_margin: float = 0.05
     identity_score_weights: dict[str, float] = field(default_factory=lambda: {
         "template": 0.30, "negative": 0.15, "above": 0.20,
         "positive": 0.10, "consistency": 0.15, "context": 0.10})
@@ -207,7 +209,7 @@ class CounterConfig:
     min_vote_ratio: float = 0.5
     strip_prominence_ratio: float = 0.6
     duplicate_ratio: float = 0.50
-    max_peak_width_ratio: float = 0.50
+    max_peak_width_ratio: float = 0.65
     repair_tolerance_ratio: float = 0.25
     weak_prominence_ratio: float = 0.5
     repair_min_vote_ratio: float = 0.5
@@ -326,7 +328,8 @@ class CounterConfig:
         for name in ("identity_reference_min_support", "identity_reference_min_score",
                      "identity_insufficient_template_weight_scale", "identity_low_paper_support",
                      "identity_low_positive_pair_score", "identity_low_template_similarity",
-                     "identity_low_strip_consistency", "identity_low_negative_isolation"):
+                     "identity_low_strip_consistency", "identity_low_negative_isolation",
+                     "identity_close_competition_gap_ratio", "identity_pair_morphology_margin"):
             if not 0 <= getattr(self, name) <= 1:
                 raise ValueError(f"{name} must be in [0,1]")
         if set(self.identity_score_weights) != {"template", "negative", "above", "positive", "consistency", "context"}:

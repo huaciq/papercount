@@ -478,6 +478,14 @@ def analyze_track_identity(tracks: list[PaperEdgeTrack], raw_profiles: np.ndarra
     raw_scale = max(1.4826 * _mad(reference_raw_similarity), config.identity_similarity_mad_floor)
     positive_scale = max(1.4826 * _mad(reference_positive_corr), config.identity_similarity_mad_floor)
     weights = config.identity_score_weights
+    ordered_tracks = sorted(tracks, key=lambda item: item.center_y)
+    nearest_gap_ratio: dict[str, float] = {}
+    for index, track in enumerate(ordered_tracks):
+        spacing = max(spacing_by_id[track.track_id], config.epsilon)
+        neighbor_gaps = [abs(track.center_y - ordered_tracks[j].center_y) / spacing
+                         for j in (index - 1, index + 1)
+                         if 0 <= j < len(ordered_tracks)]
+        nearest_gap_ratio[track.track_id] = min(neighbor_gaps, default=float("inf"))
     for track in tracks:
         feature = features[track.track_id]
         template_score = float(np.median([feature.negative_template_similarity,
@@ -513,6 +521,13 @@ def analyze_track_identity(tracks: list[PaperEdgeTrack], raw_profiles: np.ndarra
         if feature.template_outlier_z >= config.identity_suspicious_outlier_z: reasons.append("template_identity_anomaly")
         if feature.paper_support_above < config.identity_low_paper_support: reasons.append("low_paper_support_above")
         if feature.positive_pair_score < config.identity_low_positive_pair_score: reasons.append("positive_pair_abnormal")
+        rescued_short_gap = ((track.source == "recovered" or track.sequence_decision == "rescued"
+                              or track.candidate_class == "marginal")
+                             and nearest_gap_ratio[track.track_id]
+                             <= config.identity_close_competition_gap_ratio
+                             and feature.template_outlier_z >= config.identity_reject_outlier_z)
+        if rescued_short_gap:
+            reasons.append("rescued_short_gap_competition")
         feature.needs_final_verification = bool(reasons)
         feature.suspicious_reasons = reasons
 
@@ -533,6 +548,8 @@ def analyze_track_identity(tracks: list[PaperEdgeTrack], raw_profiles: np.ndarra
                 and feature.template_outlier_z >= config.identity_reject_outlier_z):
             families.append("template")
         if track.track_id in competition_by_id:
+            families.append("competition")
+        if "rescued_short_gap_competition" in (feature.suspicious_reasons or []):
             families.append("competition")
         if feature.identity_strip_consistency < config.identity_low_strip_consistency:
             families.append("strip_consistency")
@@ -559,15 +576,73 @@ def analyze_track_identity(tracks: list[PaperEdgeTrack], raw_profiles: np.ndarra
 REJECT_DECISIONS = {"REJECT_BACKGROUND", "REJECT_SECONDARY_TEXTURE", "REJECT_DUPLICATE"}
 
 
+def _boundary_morphology_score(feature: TrackIdentityFeatures) -> float:
+    """Score only aligned boundary shape, excluding material brightness context."""
+    positive_corr = _clip01(.5 * (feature.positive_profile_corr + 1.0))
+    return float(.30 * feature.raw_template_similarity
+                 + .25 * feature.normalized_template_similarity
+                 + .25 * positive_corr
+                 + .20 * feature.negative_template_similarity)
+
+
 def apply_final_track_verifier(tracks: list[PaperEdgeTrack], features: dict[str, TrackIdentityFeatures],
                                config: CounterConfig) -> tuple[list[PaperEdgeTrack], list[PaperEdgeTrack], dict]:
     """Apply only final decisions; no recovery is called after this function."""
-    proposed = [track for track in tracks if features[track.track_id].proposed_decision in REJECT_DECISIONS]
+    proposed_ids = {track.track_id for track in tracks
+                    if features[track.track_id].proposed_decision in REJECT_DECISIONS}
+    ordered = sorted(tracks, key=lambda item: item.center_y)
+    pair_adjudications = []
+    # A low-paper-context rule can choose the wrong member of a close pair.
+    # When both are direct, well-supported detections and both are template
+    # outliers, keep the member whose aligned boundary morphology is clearly
+    # closer to the image template and reject its close competitor instead.
+    for index, track in enumerate(ordered):
+        if track.track_id not in proposed_ids:
+            continue
+        feature = features[track.track_id]
+        if (track.source != "detected" or track.candidate_class != "strong"
+                or track.support_ratio < config.identity_reference_min_support
+                or "paper_support" not in (getattr(feature, "evidence_families", None) or [])):
+            continue
+        current_score = _boundary_morphology_score(feature)
+        choices = []
+        for neighbor_index in (index - 1, index + 1):
+            if not 0 <= neighbor_index < len(ordered):
+                continue
+            neighbor = ordered[neighbor_index]
+            if neighbor.track_id in proposed_ids or neighbor.source != "detected" or neighbor.candidate_class != "strong":
+                continue
+            other = features[neighbor.track_id]
+            gap_ratio = abs(track.center_y - neighbor.center_y) / max(feature.local_spacing, config.epsilon)
+            if (gap_ratio > config.identity_close_competition_gap_ratio
+                    or neighbor.support_ratio < config.identity_reference_min_support
+                    or other.template_outlier_z < config.identity_reject_outlier_z
+                    or other.identity_z_score >= -config.identity_ambiguous_z
+                    or "template" not in (other.evidence_families or [])
+                    or "paper_support" in (other.evidence_families or [])):
+                continue
+            advantage = current_score - _boundary_morphology_score(other)
+            if advantage >= config.identity_pair_morphology_margin:
+                choices.append((advantage, neighbor, other, gap_ratio))
+        if not choices:
+            continue
+        advantage, neighbor, other, gap_ratio = max(choices, key=lambda item: item[0])
+        proposed_ids.remove(track.track_id)
+        proposed_ids.add(neighbor.track_id)
+        pair_adjudications.append({
+            "kept_track_id": track.track_id,
+            "rejected_competitor_track_id": neighbor.track_id,
+            "gap_ratio": gap_ratio,
+            "kept_morphology_score": current_score,
+            "competitor_morphology_score": _boundary_morphology_score(other),
+            "morphology_advantage": advantage,
+            "reason": "close_pair_boundary_morphology_swap",
+        })
+    proposed = [track for track in tracks if track.track_id in proposed_ids]
     rejected = [] if config.final_track_verifier_shadow_mode else proposed
     rejected_ids = {track.track_id for track in rejected}
     kept = [track for track in tracks if track.track_id not in rejected_ids]
     records = []
-    ordered = sorted(tracks, key=lambda item: item.center_y)
     for index, track in enumerate(ordered):
         feature = features[track.track_id]
         records.append({"track_id": track.track_id, "center_y": track.center_y,
@@ -575,6 +650,12 @@ def apply_final_track_verifier(tracks: list[PaperEdgeTrack], features: dict[str,
                         "identity_z_score": feature.identity_z_score,
                         "false_family": feature.false_family,
                         "proposed_decision": feature.proposed_decision,
+                        "terminal_decision": ("REJECT_PAIR_COMPETITOR" if any(
+                            row["rejected_competitor_track_id"] == track.track_id
+                            for row in pair_adjudications) else
+                            "KEEP_PAIR_MORPHOLOGY" if any(
+                                row["kept_track_id"] == track.track_id
+                                for row in pair_adjudications) else feature.proposed_decision),
                         "applied": track.track_id in rejected_ids,
                         "neighbor_track_ids": [item.track_id for item in ordered[max(0, index - 1):index]
                                                + ordered[index + 1:index + 2]],
@@ -586,6 +667,7 @@ def apply_final_track_verifier(tracks: list[PaperEdgeTrack], features: dict[str,
         "proposed_reject_count": len(proposed), "applied_reject_count": len(rejected),
         "proposed_reject_track_ids": [track.track_id for track in proposed],
         "applied_reject_track_ids": [track.track_id for track in rejected],
+        "pair_adjudications": pair_adjudications,
         "track_decisions": records,
         "recovery_after_verifier": False,
     }
