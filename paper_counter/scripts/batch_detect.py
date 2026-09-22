@@ -94,6 +94,8 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--rotate-ccw", action="store_true", help="Rotate every input counter-clockwise 90 degrees")
     parser.add_argument("--ground-truth", type=Path, default=None, help="Optional ground_truth.json")
+    parser.add_argument("--output-root", type=Path, default=ROOT / "output",
+                        help="Parent directory for timestamped batch outputs")
     args = parser.parse_args()
     input_dir = args.input.resolve()
     if not input_dir.is_dir() or args.workers < 1:
@@ -101,7 +103,9 @@ def main() -> None:
     images = sorted(p for p in input_dir.rglob("*") if p.is_file() and p.suffix.lower() in EXTENSIONS)
     if not images:
         parser.error("No supported images found")
-    output = ROOT / ("output_batch_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+    output_root = args.output_root.resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    output = output_root / ("batch_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
     output.mkdir(exist_ok=False)
     config = output / "default.yaml"
     shutil.copy2(args.config, config)
