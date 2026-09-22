@@ -1,6 +1,7 @@
 """Behavioral tests for curved tracks, brightness drift and evidence-only recovery."""
 from dataclasses import replace
 import unittest
+from unittest.mock import patch
 import numpy as np
 from paper_counter import CounterConfig, PaperCounter
 from paper_counter.models import StripPeakCandidate
@@ -127,6 +128,20 @@ class TrackTests(unittest.TestCase):
         self.assertLess(bottom, 1800)
         self.assertLessEqual(top, 800)
         self.assertGreaterEqual(bottom, 1580)
+
+    def test_raw_mask_does_not_bypass_active_roi(self):
+        image = np.zeros((900, 96), np.uint8)
+        image[250:750] = 128
+        cfg = replace(self.cfg, raw_stack_mask_enabled=True, auto_stack_roi=True)
+        with patch("paper_counter.track_counter.detect_active_stack_roi",
+                   return_value=(250, 750, {"reason": "test_sustained_region"})) as detector:
+            result = PaperCounter(cfg).process(image)
+        detector.assert_called_once()
+        self.assertEqual(result.debug_info["requested_roi"]["y1"], 0)
+        self.assertEqual(result.debug_info["active_stack_roi"]["y1"], 250)
+        self.assertEqual(result.debug_info["active_stack_roi"]["y2"], 750)
+        self.assertEqual(result.debug_info["active_roi_diagnostics"]["reason"],
+                         "test_sustained_region")
 
     def test_partial_first_sheet_is_eligible(self):
         y = np.arange(520)

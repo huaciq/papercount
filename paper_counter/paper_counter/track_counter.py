@@ -28,13 +28,12 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
     gray = to_gray(roi)
     raw_preview = display_preview(gray, cfg.display_max_height, cfg.display_max_width)
     raw_mask = detect_raw_stack_mask(gray, cfg, offset=bounds["y1"])
-    if cfg.raw_stack_mask_enabled:
-        # RAW mask is a permission map, not a precise ROI locator.  Keep the
-        # complete requested image so first/last paper edges remain observable.
-        top, bottom = 0, len(gray)
-        active_info = {"reason": "raw_three_state_mask_conservative", "energy": raw_mask.statistics["raw_row_texture"]}
-    else:
-        top, bottom, active_info = detect_active_stack_roi(gray, None, cfg)
+    # The raw three-state mask decides whether individual candidates are
+    # permitted; it is intentionally conservative and cannot locate the stack
+    # when a scratch splits an otherwise empty black border.  Locate the main
+    # sustained texture interval independently, then retain the raw mask for
+    # candidate/track permission inside that interval.
+    top, bottom, active_info = detect_active_stack_roi(gray, None, cfg)
     roi = roi[top:bottom]
     gray = gray[top:bottom]
     bounds = {**bounds, "y1": bounds["y1"] + top, "y2": bounds["y1"] + bottom}
