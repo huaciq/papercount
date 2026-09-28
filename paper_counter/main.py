@@ -18,6 +18,7 @@ def main() -> int:
     parser.add_argument("--config", type=Path, default=Path(__file__).parent / "configs" / "default.yaml")
     parser.add_argument("--output", type=Path, default=Path("output"))
     parser.add_argument("--rotate-ccw", action="store_true", help="Rotate input counter-clockwise 90 degrees before detection")
+    parser.add_argument("--dual-polarity", action="store_true", help="Also audit independent positive tracks; keep negative final count")
     parser.add_argument("--ground-truth", type=Path, default=None, help="Optional ground_truth.json for count/edge metrics")
     args = parser.parse_args()
     try:
@@ -26,7 +27,14 @@ def main() -> int:
         original_shape = list(image.shape)
         if args.rotate_ccw:
             image = np.rot90(image, 1).copy()
-        result = PaperCounter(config).process(image)
+        positive_result = None
+        if args.dual_polarity:
+            if config.algorithm != "tracks":
+                raise ValueError("Dual polarity audit requires the tracks algorithm")
+            from paper_counter.dual_polarity import process_dual
+            result, positive_result, _ = process_dual(image, config)
+        else:
+            result = PaperCounter(config).process(image)
         result.debug_info["input_image"] = str(args.image.resolve())
         result.debug_info["input_original_shape"] = original_shape
         result.debug_info["rotation_ccw_degrees"] = 90 if args.rotate_ccw else 0
@@ -38,6 +46,15 @@ def main() -> int:
             result.debug_info["ground_truth"] = evaluate_result(
                 result, load_ground_truth(args.ground_truth), args.image.name)
         save_debug(result, args.output, config)
+        if positive_result is not None:
+            from dataclasses import replace
+            positive_result.debug_info.update(input_image=str(args.image.resolve()),
+                input_original_shape=original_shape,
+                rotation_ccw_degrees=90 if args.rotate_ccw else 0)
+            save_debug(positive_result, args.output / "positive",
+                       replace(config, gradient_polarity="positive",
+                               final_track_verifier_enabled=False,
+                               positive_aux_weight=0.0, recovery_require_negative_evidence=False))
     except (ValueError, OSError, TypeError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 2
