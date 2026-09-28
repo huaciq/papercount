@@ -178,6 +178,9 @@ def run(batch: Path, annotations_path: Path, output: Path) -> dict:
         for source_key, kind in KINDS.items():
             for overlay_y in entry.get(source_key, []):
                 _, detection_y = transform.overlay_to_detection(0.0, float(overlay_y))
+                override = entry.get("track_match_overrides", {}).get(str(int(float(overlay_y))))
+                if override and override.get("detection_y") is not None:
+                    detection_y = float(override["detection_y"])
                 layer, reason, evidence = classify(kind, detection_y, debug, detection_radius)
                 tag = f"{Path(image_name).stem}_{kind}_{float(overlay_y):g}".replace(" ", "_")
                 evidence_files = []
@@ -195,6 +198,7 @@ def run(batch: Path, annotations_path: Path, output: Path) -> dict:
                 rows.append({
                     "image": image_name, "kind": kind, "overlay_y": float(overlay_y),
                     "detection_y": detection_y, "layer": layer, "reason": reason,
+                    "coordinate_override": override,
                     "note": entry.get("notes", {}).get(str(int(float(overlay_y)))),
                     "evidence_files": evidence_files, "evidence": evidence,
                 })
