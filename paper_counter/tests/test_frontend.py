@@ -42,3 +42,14 @@ def test_enhanced_only_peak_cannot_be_observation():
     assert candidates[0]
     assert candidates[0][0].reason == "enhanced_only_proposal"
     assert candidates[0][0].raw_support == 0
+
+
+def test_multiscale_only_does_not_inherit_directional_sigma_x():
+    image = np.zeros((31, 31), dtype=np.float32)
+    image[15:, 10:21] = 1
+    first = replace(CounterConfig(), multiscale_gradient_enabled=True,
+                    gradient_scales=[0.0, 1.0], directional_sigma_x=1.0)
+    second = replace(first, directional_sigma_x=7.0)
+    levels_a, _ = signed_gradient_levels(image, first)
+    levels_b, _ = signed_gradient_levels(image, second)
+    np.testing.assert_array_equal(levels_a[1][1], levels_b[1][1])

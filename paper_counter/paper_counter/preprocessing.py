@@ -76,9 +76,19 @@ def signed_gradient_levels(normalized: np.ndarray, config) -> tuple[list[tuple[f
     scales = config.gradient_scales if config.multiscale_gradient_enabled else [0.0]
     levels = []
     for scale in scales:
-        source = base if scale <= config.epsilon else cv2.GaussianBlur(
-            base, (0, 0), sigmaX=max(config.directional_sigma_x, config.epsilon),
-            sigmaY=float(scale))
+        if scale <= config.epsilon:
+            source = base
+        elif config.directional_smoothing_enabled:
+            # Horizontal suppression was already applied to ``base``.  Each
+            # scale adds only a vertical integration scale, keeping the
+            # directional and scale factors independently attributable.
+            source = cv2.GaussianBlur(base, (0, 0), sigmaX=config.epsilon,
+                                      sigmaY=float(scale))
+        else:
+            # The multiscale-only ablation is isotropic by construction.  It
+            # must not silently inherit directional_sigma_x.
+            source = cv2.GaussianBlur(base, (0, 0), sigmaX=float(scale),
+                                      sigmaY=float(scale))
         label = "directional" if config.directional_smoothing_enabled else "native"
         if scale > config.epsilon:
             label += f"+scale_{float(scale):g}"
