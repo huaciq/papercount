@@ -35,7 +35,9 @@ def local_statistics(profile: np.ndarray, period: float, config: CounterConfig) 
 
 
 def detect_strip_peaks(profiles: np.ndarray, period: float, config: CounterConfig,
-                       y_offset: int = 0) -> tuple[list[list[StripPeakCandidate]], list[dict[str, np.ndarray]]]:
+                       y_offset: int = 0, raw_profiles: np.ndarray | None = None,
+                       scale_sources: np.ndarray | None = None
+                       ) -> tuple[list[list[StripPeakCandidate]], list[dict[str, np.ndarray]]]:
     """Detect local maxima before fusion; weak maxima cannot seed ordinary tracks.
 
     Profile endpoints are padded with their local baseline so visible partial
@@ -57,11 +59,21 @@ def detect_strip_peaks(profiles: np.ndarray, period: float, config: CounterConfi
                 continue
             strong_threshold = float(stats["strong_threshold"][y])
             width = float(properties["widths"][i])
+            radius = config.multiscale_raw_support_radius
+            native = profiles[strip] if raw_profiles is None else raw_profiles[strip]
+            raw_height = float(np.max(native[max(0, y-radius):min(len(native), y+radius+1)]))
+            raw_support = raw_height / max(float(profile[y]), config.epsilon)
+            scale = float(scale_sources[strip, y]) if scale_sources is not None else 0.0
+            enhanced_only = (config.multiscale_gradient_enabled and scale > config.epsilon and
+                             raw_support < config.multiscale_raw_support_ratio)
             candidates.append(StripPeakCandidate(strip, float(y + y_offset), float(profile[y]),
                 prominence, width, strong_threshold,
                 "strong" if prominence >= strong_threshold else "weak",
                 float(stats["weak_threshold"][y]),
-                "peak_too_wide" if width > config.max_peak_width_ratio * period else None))
+                "peak_too_wide" if width > config.max_peak_width_ratio * period else
+                "enhanced_only_proposal" if enhanced_only else None,
+                response_scale=scale, raw_support=raw_support,
+                observation_source="native_supported_multiscale" if scale > config.epsilon else "native"))
         # A local foreground reference is used only for track gradient scoring.
         # It never replaces the requested k * local-MAD strong/weak thresholds.
         usable = [p for p in candidates if p.reason is None]

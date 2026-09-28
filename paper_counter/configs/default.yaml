@@ -7,6 +7,19 @@ epsilon: 0.000001
 gradient_polarity: negative
 # More strips permit curvature tracking; 8/12/16 are supported.
 num_strips: 12
+# Front-end experiments are off by default; these values preserve the legacy path.
+strip_aggregation_mode: median
+strip_width_ratio: 1.0
+strip_alignment_bins: 5
+strip_alignment_window_rows: 192
+strip_alignment_max_shift: 8
+directional_smoothing_enabled: false
+directional_sigma_x: 2.0
+directional_sigma_y: 0.35
+multiscale_gradient_enabled: false
+gradient_scales: [0.0, 0.7, 1.4]
+multiscale_raw_support_ratio: 0.10
+multiscale_raw_support_radius: 2
 # tracks: new multi-strip-first engine; legacy: previous global-first engine.
 algorithm: tracks
 horizontal_margin_ratio: 0.05

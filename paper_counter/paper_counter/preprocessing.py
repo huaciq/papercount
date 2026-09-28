@@ -59,6 +59,33 @@ def signed_gradient(normalized: np.ndarray) -> np.ndarray:
     return cv2.Scharr(normalized, cv2.CV_32F, 0, 1)
 
 
+def signed_gradient_levels(normalized: np.ndarray, config) -> tuple[list[tuple[float, np.ndarray, str]], np.ndarray]:
+    """Return configurable signed gradients plus an untouched evidence level.
+
+    Scale zero is independent of the estimated paper period.  The untouched
+    native gradient is always returned separately so enhanced responses remain
+    proposals until supported by an original-resolution observation.
+    """
+    native = signed_gradient(normalized)
+    if not config.directional_smoothing_enabled and not config.multiscale_gradient_enabled:
+        return [(0.0, native, "native")], native
+    base = normalized
+    if config.directional_smoothing_enabled:
+        base = cv2.GaussianBlur(base, (0, 0), sigmaX=config.directional_sigma_x,
+                                sigmaY=config.directional_sigma_y)
+    scales = config.gradient_scales if config.multiscale_gradient_enabled else [0.0]
+    levels = []
+    for scale in scales:
+        source = base if scale <= config.epsilon else cv2.GaussianBlur(
+            base, (0, 0), sigmaX=max(config.directional_sigma_x, config.epsilon),
+            sigmaY=float(scale))
+        label = "directional" if config.directional_smoothing_enabled else "native"
+        if scale > config.epsilon:
+            label += f"+scale_{float(scale):g}"
+        levels.append((float(scale), signed_gradient(source), label))
+    return levels, native
+
+
 def display_preview(array: np.ndarray, max_height: int, max_width: int) -> np.ndarray:
     """Resize exclusively for debug display, never for detection."""
     ratio = min(1.0, max_height / array.shape[0], max_width / array.shape[1])

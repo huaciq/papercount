@@ -1,0 +1,7 @@
+gradient_polarity: negative
+algorithm: tracks
+final_track_verifier_enabled: true
+final_track_verifier_shadow_mode: false
+num_strips: 18
+strip_aggregation_mode: narrow_median
+strip_width_ratio: 0.55

@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 from .config import CounterConfig
 from .models import PaperCountResult, PeakCandidate
-from .preprocessing import crop_roi, to_gray, normalize_illumination, signed_gradient, display_preview
-from .profiles import make_strip_profiles, normalize_and_fuse
+from .preprocessing import crop_roi, to_gray, normalize_illumination, signed_gradient_levels, display_preview
+from .profiles import make_strip_profiles_diagnostic, normalize_and_fuse
 from .period import score_polarity, estimate_period
 from .local_detection import detect_strip_peaks
 from .tracking import associate_strip_peaks, validate_tracks, deduplicate_tracks, classify_tracks, deduplicate_obvious_tracks
@@ -38,29 +38,49 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
     gray = gray[top:bottom]
     bounds = {**bounds, "y1": bounds["y1"] + top, "y2": bounds["y1"] + bottom}
     normalized = normalize_illumination(gray, cfg.illumination_sigma, cfg.epsilon)
-    gy = signed_gradient(normalized)
+    gradient_levels, native_gy = signed_gradient_levels(normalized, cfg)
     invalid_rows = raw_mask.states[top:bottom] == StackState.INVALID
-    gy[invalid_rows] = 0
+    native_gy[invalid_rows] = 0
+    for _, gradient, _ in gradient_levels:
+        gradient[invalid_rows] = 0
     preview = lambda a: display_preview(a, cfg.display_max_height, cfg.display_max_width)
     previews = {"gray": preview(gray), "normalized": preview(normalized)}
+    preview_gradient = gradient_levels[-1][1]
     for name, sign in (("positive", 1.0), ("negative", -1.0)):
-        rendered = np.empty(gy.shape, dtype=np.uint8)
-        scale = max(float(np.max(gy) if sign > 0 else -np.min(gy)), cfg.epsilon)
-        for start in range(0, len(gy), cfg.debug_chunk_rows):
-            chunk = gy[start:start + cfg.debug_chunk_rows] * sign
+        rendered = np.empty(preview_gradient.shape, dtype=np.uint8)
+        scale = max(float(np.max(preview_gradient) if sign > 0 else -np.min(preview_gradient)), cfg.epsilon)
+        for start in range(0, len(preview_gradient), cfg.debug_chunk_rows):
+            chunk = preview_gradient[start:start + cfg.debug_chunk_rows] * sign
             rendered[start:start + len(chunk)] = np.clip(chunk * (255 / scale), 0, 255).astype(np.uint8)
         previews[name + "_gradient"] = preview(rendered)
     del rendered
     data = {}
     for polarity in ("positive", "negative"):
-        raw, strips = make_strip_profiles(gy, polarity, cfg)
-        raw[:, invalid_rows] = 0
+        level_profiles, level_details = [], []
+        for scale_value, gradient, source in gradient_levels:
+            raw_level, strips, aggregation = make_strip_profiles_diagnostic(gradient, polarity, cfg)
+            raw_level[:, invalid_rows] = 0
+            level_profiles.append(raw_level)
+            level_details.append({"scale": scale_value, "source": source,
+                                  "aggregation": aggregation})
+        native_raw, _, native_aggregation = make_strip_profiles_diagnostic(native_gy, polarity, cfg)
+        native_raw[:, invalid_rows] = 0
+        stack = np.stack(level_profiles)
+        winners = np.argmax(stack, axis=0)
+        raw = np.take_along_axis(stack, winners[None, ...], axis=0)[0]
+        scale_values = np.asarray([item[0] for item in gradient_levels], dtype=np.float32)
+        scale_sources = scale_values[winners]
         profiles, fused, stats = normalize_and_fuse(raw, cfg.epsilon)
+        native_profiles, _, _ = normalize_and_fuse(native_raw, cfg.epsilon)
         data[polarity] = {"raw_profiles": raw, "profiles": profiles, "global": fused,
-                          "strip_stats": stats, "assessment": score_polarity(fused, cfg)}
+                          "native_raw_profiles": native_raw, "native_profiles": native_profiles,
+                          "scale_sources": scale_sources,
+                          "strip_stats": stats, "assessment": score_polarity(fused, cfg),
+                          "gradient_levels": level_details,
+                          "native_aggregation": native_aggregation}
     raw_intensity_profiles = make_intensity_strip_profiles(gray, strips, cfg.debug_chunk_rows)
     normalized_intensity_profiles = make_intensity_strip_profiles(normalized, strips, cfg.debug_chunk_rows)
-    del normalized, gy
+    del normalized, native_gy, gradient_levels, preview_gradient
     chosen = cfg.gradient_polarity
     if chosen == "auto":
         chosen = max(data, key=lambda p: (data[p]["assessment"]["score"], data[p]["assessment"]["acf_score"]))
@@ -93,7 +113,9 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
     reuse_attempts, weak_attempts, pool, remaining_gaps = [], [], [], []
     invalid_peak_count = 0
     if period is not None:
-        candidates, statistics = detect_strip_peaks(selected["profiles"], period, cfg, bounds["y1"])
+        candidates, statistics = detect_strip_peaks(
+            selected["profiles"], period, cfg, bounds["y1"],
+            selected["native_profiles"], selected["scale_sources"])
         invalid_peak_count = sum(raw_mask.state_at(p.y) == StackState.INVALID for strip in candidates for p in strip)
         candidates = filter_mask_peaks(candidates, raw_mask)
         valid = sum(s["active"] for s in selected["strip_stats"])
@@ -118,7 +140,9 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
             hypotheses = recovery_hypotheses(anchors, local, cfg, regularity)
             auxiliary = None
             if chosen == "negative" and cfg.positive_aux_weight > 0:
-                auxiliary, _ = detect_strip_peaks(data["positive"]["profiles"], period, cfg, bounds["y1"])
+                auxiliary, _ = detect_strip_peaks(
+                    data["positive"]["profiles"], period, cfg, bounds["y1"],
+                    data["positive"]["native_profiles"], data["positive"]["scale_sources"])
                 auxiliary = filter_mask_peaks(auxiliary, raw_mask)
             added, failures, reuse_attempts, weak_attempts = recover_sequence_candidates(
                 hypotheses, candidates, sequence.selected, pool, valid, cfg, auxiliary,
@@ -270,10 +294,24 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
         "mean_peak_spacing": float(np.mean(np.diff(positions))) if len(positions) > 1 else None,
         "polarity_scores": {p: {k: v for k, v in d["assessment"].items() if k != "acf"} for p, d in data.items()},
         "strip_bounds_roi_x": strips, "strip_stats": {p: d["strip_stats"] for p, d in data.items()},
+        "front_end": {"strip_aggregation_mode": cfg.strip_aggregation_mode,
+            "strip_width_ratio": cfg.strip_width_ratio,
+            "directional_smoothing_enabled": cfg.directional_smoothing_enabled,
+            "directional_sigma_x": cfg.directional_sigma_x,
+            "directional_sigma_y": cfg.directional_sigma_y,
+            "multiscale_gradient_enabled": cfg.multiscale_gradient_enabled,
+            "gradient_scales": cfg.gradient_scales,
+            "scale_source": "fixed_config_not_period",
+            "cross_scale_deduplication": "pointwise_max_before_peak_detection",
+            "enhanced_only_observations_count_as_tracks": False,
+            "gradient_levels": {p: [{"scale": level["scale"], "source": level["source"],
+                                      "aggregation": level["aggregation"]}
+                                     for level in d["gradient_levels"]] for p, d in data.items()}},
         "prominence_threshold": None, "threshold_mode": "per_strip_local_adaptive",
         "strip_peak_candidates": [[p.to_dict() for p in strip] for strip in candidates],
         "strong_strip_candidate_count": sum(p.strength_type == "strong" and not p.reason for strip in candidates for p in strip),
         "weak_strip_candidate_count": sum(p.strength_type == "weak" and not p.reason for strip in candidates for p in strip),
+        "enhanced_only_proposal_count": sum(p.reason == "enhanced_only_proposal" for strip in candidates for p in strip),
         "raw_seed_track_count": len(raw_tracks),
         "raw_recovery_track_count": sum(a["raw_track_count"] for a in attempts),
         "raw_track_count": len(raw_tracks) + sum(a["raw_track_count"] for a in attempts),

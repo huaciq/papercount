@@ -1,0 +1,15 @@
+gradient_polarity: negative
+algorithm: tracks
+final_track_verifier_enabled: true
+final_track_verifier_shadow_mode: false
+strip_aggregation_mode: slope_aligned
+strip_alignment_bins: 5
+strip_alignment_window_rows: 192
+strip_alignment_max_shift: 8
+directional_smoothing_enabled: true
+directional_sigma_x: 2.0
+directional_sigma_y: 0.35
+multiscale_gradient_enabled: true
+gradient_scales: [0.0, 0.7, 1.4]
+multiscale_raw_support_ratio: 0.10
+multiscale_raw_support_radius: 2

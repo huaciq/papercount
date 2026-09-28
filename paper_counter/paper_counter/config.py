@@ -16,6 +16,18 @@ class CounterConfig:
     epsilon: float = 1e-6
     gradient_polarity: str = "negative"
     num_strips: int = 12
+    strip_aggregation_mode: str = "median"
+    strip_width_ratio: float = 1.0
+    strip_alignment_bins: int = 5
+    strip_alignment_window_rows: int = 192
+    strip_alignment_max_shift: int = 8
+    directional_smoothing_enabled: bool = False
+    directional_sigma_x: float = 2.0
+    directional_sigma_y: float = 0.35
+    multiscale_gradient_enabled: bool = False
+    gradient_scales: list[float] = field(default_factory=lambda: [0.0, 0.7, 1.4])
+    multiscale_raw_support_ratio: float = 0.10
+    multiscale_raw_support_radius: int = 2
     algorithm: str = "tracks"
     local_window_periods: float = 8.0
     strong_prominence_k: float = 2.0
@@ -338,10 +350,23 @@ class CounterConfig:
             raise ValueError("Identity score weights must be finite nonnegative with positive sum")
         if self.gradient_polarity not in {"auto", "positive", "negative"}:
             raise ValueError("gradient_polarity must be auto, positive or negative")
+        if self.strip_aggregation_mode not in {"median", "narrow_median", "slope_aligned"}:
+            raise ValueError("strip_aggregation_mode must be median, narrow_median or slope_aligned")
+        if not 0 < self.strip_width_ratio <= 1:
+            raise ValueError("strip_width_ratio must be in (0,1]")
+        if (self.directional_sigma_x < 0 or self.directional_sigma_y < 0 or
+                not self.gradient_scales or any(type(v) not in (int, float) or v < 0 for v in self.gradient_scales)):
+            raise ValueError("Directional sigmas and gradient_scales must be finite nonnegative values")
+        if sorted(set(float(v) for v in self.gradient_scales)) != [float(v) for v in self.gradient_scales]:
+            raise ValueError("gradient_scales must be unique and increasing")
+        if not 0 <= self.multiscale_raw_support_ratio <= 1:
+            raise ValueError("multiscale_raw_support_ratio must be in [0,1]")
         for name in ("num_strips", "min_period", "max_period", "confidence_min_edges",
                      "display_max_height", "display_max_width", "debug_chunk_rows",
                      "identity_profile_samples", "identity_template_min_tracks",
                      "identity_min_reject_evidence_families",
+                     "strip_alignment_bins", "strip_alignment_window_rows",
+                     "strip_alignment_max_shift", "multiscale_raw_support_radius",
                      "max_repair_gap_periods"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:

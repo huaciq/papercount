@@ -56,6 +56,9 @@ class StripPeakCandidate:
     weak_threshold: float = 0.0
     reason: Optional[str] = None
     local_prominence_reference: float = 0.0
+    response_scale: float = 0.0
+    raw_support: float = 1.0
+    observation_source: str = "native"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

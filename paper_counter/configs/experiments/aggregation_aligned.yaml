@@ -1,0 +1,8 @@
+gradient_polarity: negative
+algorithm: tracks
+final_track_verifier_enabled: true
+final_track_verifier_shadow_mode: false
+strip_aggregation_mode: slope_aligned
+strip_alignment_bins: 5
+strip_alignment_window_rows: 192
+strip_alignment_max_shift: 8
