@@ -25,6 +25,7 @@ class CounterConfig:
     directional_sigma_x: float = 2.0
     directional_sigma_y: float = 0.35
     multiscale_gradient_enabled: bool = False
+    enhanced_period_from_native: bool = True
     gradient_scales: list[float] = field(default_factory=lambda: [0.0, 0.7, 1.4])
     multiscale_raw_support_ratio: float = 0.10
     multiscale_raw_support_radius: int = 2

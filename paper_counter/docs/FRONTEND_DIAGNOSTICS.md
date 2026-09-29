@@ -27,6 +27,12 @@ candidate records its winning scale and its support in the untouched native
 gradient. An enhanced-only proposal is diagnostic evidence and cannot enter a
 paper track as a real observation.
 
+When either enhancement is enabled, `enhanced_period_from_native: true` also
+estimates the back-end spacing scale from the untouched native gradient. This
+prevents smoothing or scale fusion from changing an ACF harmonic and keeps the
+back end comparable across front-end ablations. Set it to false only for an
+explicit sensitivity experiment.
+
 ## Reproduction
 
 Run a single fixed-backend variant:

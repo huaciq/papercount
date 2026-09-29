@@ -17,6 +17,7 @@ directional_smoothing_enabled: false
 directional_sigma_x: 2.0
 directional_sigma_y: 0.35
 multiscale_gradient_enabled: false
+enhanced_period_from_native: true
 gradient_scales: [0.0, 0.7, 1.4]
 multiscale_raw_support_ratio: 0.10
 multiscale_raw_support_radius: 2

@@ -71,11 +71,13 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
         scale_values = np.asarray([item[0] for item in gradient_levels], dtype=np.float32)
         scale_sources = scale_values[winners]
         profiles, fused, stats = normalize_and_fuse(raw, cfg.epsilon)
-        native_profiles, _, _ = normalize_and_fuse(native_raw, cfg.epsilon)
+        native_profiles, native_fused, _ = normalize_and_fuse(native_raw, cfg.epsilon)
         data[polarity] = {"raw_profiles": raw, "profiles": profiles, "global": fused,
                           "native_raw_profiles": native_raw, "native_profiles": native_profiles,
+                          "native_global": native_fused,
                           "scale_sources": scale_sources,
                           "strip_stats": stats, "assessment": score_polarity(fused, cfg),
+                          "native_assessment": score_polarity(native_fused, cfg),
                           "gradient_levels": level_details,
                           "native_aggregation": native_aggregation}
     raw_intensity_profiles = make_intensity_strip_profiles(gray, strips, cfg.debug_chunk_rows)
@@ -85,8 +87,12 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
     if chosen == "auto":
         chosen = max(data, key=lambda p: (data[p]["assessment"]["score"], data[p]["assessment"]["acf_score"]))
     selected = data[chosen]
-    period = selected["assessment"]["period"]
-    period_source = "global_profile" if period is not None else "unavailable"
+    use_native_period = cfg.enhanced_period_from_native and (
+        cfg.directional_smoothing_enabled or cfg.multiscale_gradient_enabled)
+    period_assessment = selected["native_assessment"] if use_native_period else selected["assessment"]
+    period = period_assessment["period"]
+    period_source = ("native_gradient_frontend_lock" if period is not None and use_native_period
+                     else "global_profile" if period is not None else "unavailable")
     strip_periods = []
     # Large curvature can wash out the fused signal. Measured strip ACF consensus
     # supplies the scale in that case, without inferring any paper locations.
@@ -300,6 +306,8 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
             "directional_sigma_x": cfg.directional_sigma_x,
             "directional_sigma_y": cfg.directional_sigma_y,
             "multiscale_gradient_enabled": cfg.multiscale_gradient_enabled,
+            "enhanced_period_from_native": cfg.enhanced_period_from_native,
+            "period_evidence": period_source,
             "gradient_scales": cfg.gradient_scales,
             "scale_source": "fixed_config_not_period",
             "cross_scale_deduplication": "pointwise_max_before_peak_detection",
