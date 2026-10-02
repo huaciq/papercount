@@ -382,6 +382,84 @@ def augment_observed_tracks(existing: list[PaperEdgeTrack], proposals: list[Pape
         'after_verifier_recovery': False}
 
 
+def choose_strip_spacing(diagnostic: dict, chosen: str, initial: float,
+                        cfg: CounterConfig) -> tuple[float, dict]:
+    """Correct a harmonic prior only with native ACF and RAW body observations.
+
+    This changes a search/association scale, never adds a peak or paper. A
+    conservative absolute strip quorum protects against choosing the period
+    of one localized reflection. Non-harmonic or ambiguous disagreements
+    retain the original scale and are reported for review.
+    """
+    part = diagnostic['polarities'][chosen]
+    votes, evidence = [], []
+    for s, row in enumerate(part['strips']):
+        observed = [o for o in row['observations'] if
+                    o['raw_significance'] >= cfg.strip_sequence_min_raw_significance
+                    and o['pair_score'] >= 0.25]
+        if len(observed) < 6:
+            continue
+        gaps = np.diff([o['y'] for o in observed])
+        gaps = gaps[(gaps >= cfg.min_period) & (gaps <= cfg.max_period)]
+        if len(gaps) < 4:
+            continue
+        measured = float(np.median(gaps))
+        mad = float(np.median(np.abs(gaps-measured)))
+        if mad/max(measured, cfg.epsilon) > 0.25:
+            continue
+        choices = [h for h in part['strip_period_hypotheses'][s]
+                   if abs(h['period']-measured) <= 0.25*measured]
+        if not choices:
+            continue
+        native = max(choices, key=lambda h: h['acf_score'])
+        votes.append(float(native['period']))
+        evidence.append({'strip': s, 'raw_gap_median': measured, 'raw_gap_mad': mad,
+                         'native_acf_period': native['period'], 'native_acf_score': native['acf_score']})
+    required = max(2, int(np.ceil(cfg.min_track_support_ratio*cfg.num_strips)))
+    diagnostic = {'original_scale': initial, 'raw_acf_strip_evidence': evidence,
+                  'required_strips': required, 'changed': False, 'period_generated_paper_count': 0}
+    if len(votes) < required:
+        return initial, {**diagnostic, 'reason': 'insufficient_raw_acf_quorum'}
+    consensus = float(np.median(votes))
+    agreeing = sum(abs(v-consensus) <= 0.20*consensus for v in votes)
+    ratio = initial/consensus
+    harmonic = int(round(ratio))
+    if agreeing >= required and 2 <= harmonic <= 4 and abs(ratio-harmonic) <= 0.15*harmonic:
+        return consensus, {**diagnostic, 'changed': True, 'selected_scale': consensus,
+                           'harmonic': harmonic, 'reason': 'native_acf_and_raw_body_gap_consensus'}
+    return initial, {**diagnostic, 'selected_scale': initial, 'alternative_consensus': consensus,
+                     'reason': 'non_harmonic_or_ambiguous_disagreement_review_only'}
+
+
+def attach_raw_body_confirmation(tracks: list[PaperEdgeTrack], diagnostic: dict,
+                                 chosen: str, cfg: CounterConfig) -> None:
+    """Record direct body evidence that may conflict with a global template.
+
+    This is not a new candidate and does not run after a verifier deletion.
+    A wide, spatially distributed set of strong RAW transitions is required.
+    Conflicts are retained for review, not labelled definitely correct.
+    """
+    for track in tracks:
+        polarity = track.boundary_polarity or chosen
+        part = diagnostic['polarities'][polarity]['strips']
+        evidence = []
+        for s, y in track.strip_positions.items():
+            matches = [o for o in part[s]['observations'] if abs(o['y']-y) <= 2]
+            if not matches:
+                continue
+            observation = min(matches, key=lambda o: abs(o['y']-y))
+            if observation['raw_significance'] >= 0.6 and observation['pair_score'] >= 0.65:
+                evidence.append({'strip': s, 'y': observation['y'], 'pair_y': observation['opposite_pair_y'],
+                                 'raw_significance': observation['raw_significance'],
+                                 'pair_score': observation['pair_score']})
+        spatial_groups = {min(2, int(e['strip']*3/cfg.num_strips)) for e in evidence}
+        required = max(3, int(np.ceil(cfg.num_strips*.5)))
+        track.local_evidence['raw_body_confirmation'] = {
+            'supported': len(evidence) >= required and len(spatial_groups) >= 2,
+            'required_strips': required, 'spatial_groups': sorted(spatial_groups),
+            'observations': evidence, 'interpretation': 'direct_evidence_not_accuracy_probability'}
+
+
 def build_strip_consensus(data, raw_intensity, raw_gradient, gray, strips,
                           slopes, offset, period, mask, chosen, cfg):
     quality = quality_profiles(gray, strips, cfg)

@@ -164,6 +164,12 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
         strip_tracks, strip_rejected, strip_local, strip_sequence, strip_candidates, strip_consensus_debug, strip_quality = build_strip_consensus(
             data, raw_intensity_profiles*(255/np.iinfo(gray.dtype).max), raw_gradient_profiles,
             gray, strips, orientation_fields, bounds["y1"], period, raw_mask, chosen, cfg)
+        if cfg.strip_sequence_scale_consensus_enabled:
+            from .strip_sequence import choose_strip_spacing
+            period, scale_choice = choose_strip_spacing(strip_consensus_debug, chosen, period, cfg)
+            strip_consensus_debug['scale_choice'] = scale_choice
+            if scale_choice['changed']:
+                period_source = 'native_strip_acf_with_unnormalized_raw_body_consensus'
         if cfg.strip_sequence_mode == "replace":
             tracks, rejected, local, sequence, candidates = strip_tracks, strip_rejected, strip_local, strip_sequence, strip_candidates
             raw_tracks = tracks+rejected
@@ -292,6 +298,9 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
                       "proposed_reject_track_ids": [], "applied_reject_track_ids": [],
                       "track_decisions": [], "recovery_after_verifier": False}
     verifier_rejected = []
+    if cfg.strip_sequence_enabled and cfg.strip_sequence_raw_body_safeguard_enabled:
+        from .strip_sequence import attach_raw_body_confirmation
+        attach_raw_body_confirmation(tracks, strip_consensus_debug, chosen, cfg)
     if cfg.final_track_verifier_enabled:
         if cfg.strip_sequence_dual_enabled and any(t.boundary_polarity and t.boundary_polarity != chosen for t in tracks):
             bundles = {}
@@ -421,8 +430,11 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
         "detected_peaks": [p.to_dict() for p in detected], "repaired_peaks": [p.to_dict() for p in repaired],
         "rejected_peaks": [p.to_dict() for p in rejected_peaks],
         "confidence": confidence, "confidence_components": confidence_parts, "full_resolution_detection": True,
-        "status": "ok" if len(tracks) >= 3 else "insufficient_evidence",
-        "warnings": [] if period else ["No reliable period; no validated tracks. Count zero is not proof of no paper."]}
+        "status": "review_required" if verifier_debug.get('raw_body_conflicts_retained') else
+                  "ok" if len(tracks) >= 3 else "insufficient_evidence",
+        "warnings": (["RAW body evidence conflicts with template rejection; retained tracks require review."]
+                     if verifier_debug.get('raw_body_conflicts_retained') else [])
+                    + ([] if period else ["No reliable period; no validated tracks. Count zero is not proof of no paper."])}
     return PaperCountResult(len(tracks), positions, detected, repaired, rejected_peaks, period, chosen, confidence,
         debug, {"roi": roi, "previews": previews, "polarities": data,
         "raw_stack_mask": raw_mask, "raw_gray_preview": raw_preview,

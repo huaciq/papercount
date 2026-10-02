@@ -28,6 +28,8 @@ def configs():
             'association': replace(baseline, stack_roi_mode='foreground_envelope', track_validate_before_claim=True),
             'single': CounterConfig.from_yaml(ROOT/'configs/experiments/strip_sequence_single.yaml'),
             'dual': CounterConfig.from_yaml(ROOT/'configs/experiments/strip_sequence_dual.yaml'),
+            'dual_no_scale': replace(CounterConfig.from_yaml(ROOT/'configs/experiments/strip_sequence_dual.yaml'), strip_sequence_scale_consensus_enabled=False, strip_sequence_raw_body_safeguard_enabled=False),
+            'dual_scale': replace(CounterConfig.from_yaml(ROOT/'configs/experiments/strip_sequence_dual.yaml'), strip_sequence_raw_body_safeguard_enabled=False),
             'oriented': CounterConfig.from_yaml(ROOT/'configs/experiments/strip_sequence_oriented.yaml'),
             'replacement': replace(CounterConfig.from_yaml(ROOT/'configs/experiments/strip_sequence_dual.yaml'), strip_sequence_mode='replace')}
 

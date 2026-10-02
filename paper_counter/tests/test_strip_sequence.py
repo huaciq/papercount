@@ -4,7 +4,7 @@ import pytest
 from paper_counter import CounterConfig, PaperCounter
 from paper_counter.profiles import estimate_strip_orientation, make_strip_profiles_diagnostic
 from paper_counter.preprocessing import signed_gradient
-from paper_counter.strip_sequence import ordered_match, quality_profiles
+from paper_counter.strip_sequence import ordered_match, quality_profiles, choose_strip_spacing, attach_raw_body_confirmation
 
 
 def settings(**changes):
@@ -124,3 +124,60 @@ def test_validate_before_claim_keeps_unique_ids_through_terminal_verifier():
     assert result.count == 18
     assert len(ids) == len(set(ids))
     assert len(result.debug_info['track_identity']['features']) == result.count
+
+
+def test_raw_body_and_native_strip_acf_can_correct_doubled_global_scale():
+    cfg = settings()
+    stripes = [{'strip': s, 'observations': [
+        {'y': float(y), 'raw_significance': 1., 'pair_score': .8} for y in range(10, 230, 20)]}
+        for s in range(cfg.num_strips)]
+    diagnostic = {'polarities': {'positive': {'strips': stripes, 'strip_period_hypotheses': [
+        [{'period': 40, 'acf_score': .9}, {'period': 20, 'acf_score': .6}] for _ in stripes]}}}
+    scale, evidence = choose_strip_spacing(diagnostic, 'positive', 40, cfg)
+    assert scale == 20 and evidence['changed']
+    assert evidence['period_generated_paper_count'] == 0
+
+
+def test_acf_without_raw_body_candidates_cannot_override_spacing():
+    cfg = settings()
+    stripes = [{'strip': s, 'observations': []} for s in range(cfg.num_strips)]
+    diagnostic = {'polarities': {'positive': {'strips': stripes, 'strip_period_hypotheses': [
+        [{'period': 20, 'acf_score': .95}] for _ in stripes]}}}
+    scale, evidence = choose_strip_spacing(diagnostic, 'positive', 40, cfg)
+    assert scale == 40 and not evidence['changed']
+
+
+def test_raw_body_confirmation_requires_multiple_spatial_regions():
+    image = stack()
+    cfg = settings()
+    result = PaperCounter(cfg).process(image)
+    tracks = result.paper_edge_tracks
+    d = result.debug_info['strip_consensus']
+    attach_raw_body_confirmation(tracks, d, 'positive', cfg)
+    assert all(t.local_evidence['raw_body_confirmation']['supported'] for t in tracks)
+    for polarity in ('positive', 'negative'):
+        for row in d['polarities'][polarity]['strips'][4:]:
+            row['observations'] = []
+    attach_raw_body_confirmation(tracks, d, 'positive', cfg)
+    assert not any(t.local_evidence['raw_body_confirmation']['supported'] for t in tracks)
+
+
+def test_terminal_raw_conflict_is_reviewable_and_does_not_bypass_background_rejection():
+    from paper_counter.track_identity import TrackIdentityFeatures, apply_final_track_verifier
+    cfg = replace(settings(), final_track_verifier_enabled=True, final_track_verifier_shadow_mode=False)
+    result = PaperCounter(cfg).process(stack())
+    tracks = result.paper_edge_tracks
+    attach_raw_body_confirmation(tracks, result.debug_info['strip_consensus'], 'negative', cfg)
+    features = {r['track_id']: TrackIdentityFeatures(**r) for r in result.debug_info['track_identity']['features']}
+    first = features[tracks[0].track_id]
+    first.false_family, first.proposed_decision = 'SECONDARY_TEXTURE', 'REJECT_SECONDARY_TEXTURE'
+    first.evidence_families = ['template']
+    kept, rejected, _ = apply_final_track_verifier(tracks, features, cfg)
+    assert tracks[0] in rejected
+    guarded = replace(cfg, strip_sequence_raw_body_safeguard_enabled=True)
+    kept, rejected, debug = apply_final_track_verifier(tracks, features, guarded)
+    assert tracks[0] in kept and not rejected
+    assert debug['raw_body_conflicts_retained'] == [tracks[0].track_id]
+    first.false_family, first.proposed_decision = 'BACKGROUND_FALSE_EDGE', 'REJECT_BACKGROUND'
+    kept, rejected, _ = apply_final_track_verifier(tracks, features, guarded)
+    assert tracks[0] in rejected

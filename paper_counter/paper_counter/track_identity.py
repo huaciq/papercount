@@ -656,6 +656,15 @@ def apply_final_track_verifier(tracks: list[PaperEdgeTrack], features: dict[str,
             "morphology_advantage": advantage,
             "reason": "close_pair_boundary_morphology_swap",
         })
+    raw_conflicts = []
+    if config.strip_sequence_raw_body_safeguard_enabled:
+        for track in ordered:
+            feature = features[track.track_id]
+            proof = track.local_evidence.get('raw_body_confirmation', {})
+            if (track.track_id in proposed_ids and proof.get('supported') and
+                    feature.false_family == 'SECONDARY_TEXTURE' and track.raw_mask_state != 'INVALID'):
+                proposed_ids.remove(track.track_id)
+                raw_conflicts.append(track.track_id)
     proposed = [track for track in tracks if track.track_id in proposed_ids]
     rejected = [] if config.final_track_verifier_shadow_mode else proposed
     rejected_ids = {track.track_id for track in rejected}
@@ -668,7 +677,8 @@ def apply_final_track_verifier(tracks: list[PaperEdgeTrack], features: dict[str,
                         "identity_z_score": feature.identity_z_score,
                         "false_family": feature.false_family,
                         "proposed_decision": feature.proposed_decision,
-                        "terminal_decision": ("REJECT_PAIR_COMPETITOR" if any(
+                        "terminal_decision": ("KEEP_RAW_BODY_CONFLICT_REVIEW" if track.track_id in raw_conflicts else
+                            "REJECT_PAIR_COMPETITOR" if any(
                             row["rejected_competitor_track_id"] == track.track_id
                             for row in pair_adjudications) else
                             "KEEP_PAIR_MORPHOLOGY" if any(
@@ -686,6 +696,7 @@ def apply_final_track_verifier(tracks: list[PaperEdgeTrack], features: dict[str,
         "proposed_reject_track_ids": [track.track_id for track in proposed],
         "applied_reject_track_ids": [track.track_id for track in rejected],
         "pair_adjudications": pair_adjudications,
+        "raw_body_conflicts_retained": raw_conflicts,
         "track_decisions": records,
         "recovery_after_verifier": False,
     }

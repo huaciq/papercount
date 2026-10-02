@@ -3,6 +3,7 @@ gradient_polarity: positive
 stack_roi_mode: foreground_envelope
 strip_sequence_enabled: true
 strip_sequence_mode: augment
+strip_sequence_scale_consensus_enabled: false
 track_validate_before_claim: true
 strip_sequence_dual_enabled: false
 final_track_verifier_enabled: true

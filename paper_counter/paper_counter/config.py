@@ -32,6 +32,8 @@ class CounterConfig:
     # Independent local sequences and ordered fusion are explicit experiments.
     strip_sequence_enabled: bool = False
     strip_sequence_mode: str = "augment"
+    strip_sequence_scale_consensus_enabled: bool = False
+    strip_sequence_raw_body_safeguard_enabled: bool = False
     strip_sequence_dual_enabled: bool = False
     strip_sequence_quality_enabled: bool = True
     strip_sequence_min_observations: int = 2
