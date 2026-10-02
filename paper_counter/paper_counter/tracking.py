@@ -130,9 +130,21 @@ def associate_strip_peaks(candidates: list[list[StripPeakCandidate]], period: fl
     for _, path in paths:
         if any(i in used for i in path):
             continue
+        candidate = make_track([nodes[i] for i in path], period, valid, config,
+                               "recovered" if recovery else "detected")
+        if config.track_validate_before_claim:
+            # Invalid high-scoring joins must not consume RAW peaks that
+            # remain available to plausible competing paths. Marginal paths
+            # are retained for the existing sequence/recovery stages.
+            _, _, garbage = classify_tracks([candidate], config)
+            if garbage:
+                continue
+            # Classification assigns a temporary seed ID to standalone paths.
+            # The production batch classification must assign globally unique
+            # IDs after conflict-free extraction.
+            candidate.track_id = ""
         used.update(path)
-        tracks.append(make_track([nodes[i] for i in path], period, valid, config,
-                                 "recovered" if recovery else "detected"))
+        tracks.append(candidate)
     return sorted(tracks, key=lambda t: t.center_y)
 
 

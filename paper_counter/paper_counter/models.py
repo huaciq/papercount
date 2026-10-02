@@ -98,6 +98,8 @@ class PaperEdgeTrack:
     raw_valid_ratio: float = 1.0
     curve_geometry: dict[str, Any] = field(default_factory=dict)
     continuity_geometry: dict[str, Any] = field(default_factory=dict)
+    boundary_polarity: str = ""
+    local_evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -1,0 +1,12 @@
+# Joint RAW-supported body pairing; counts are never averaged or added.
+gradient_polarity: positive
+stack_roi_mode: foreground_envelope
+strip_sequence_enabled: true
+strip_sequence_mode: augment
+track_validate_before_claim: true
+strip_sequence_dual_enabled: true
+final_track_verifier_enabled: true
+final_track_verifier_shadow_mode: false
+multiscale_gradient_enabled: true
+enhanced_period_from_native: true
+gradient_scales: [0.0, 0.7, 1.4]

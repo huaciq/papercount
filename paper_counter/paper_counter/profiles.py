@@ -60,6 +60,7 @@ def _aligned_profile(response: np.ndarray, config: CounterConfig) -> tuple[np.nd
 
 
 def make_strip_profiles_diagnostic(gy: np.ndarray, polarity: str, config: CounterConfig
+                                  , orientation_fields: list[np.ndarray] | None = None
                                   ) -> tuple[np.ndarray, list[tuple[int, int]], list[dict[str, Any]]]:
     """Project signed responses using row medians in bounded-size chunks."""
     h, w = gy.shape
@@ -81,7 +82,15 @@ def make_strip_profiles_diagnostic(gy: np.ndarray, polarity: str, config: Counte
     for index, (x1, x2) in enumerate(bounds):
         response = gy[:, x1:x2] * sign
         np.maximum(response, 0, out=response)
-        if config.strip_aggregation_mode == "slope_aligned":
+        if config.strip_aggregation_mode == "orientation_aligned":
+            if orientation_fields is None:
+                raise ValueError("orientation_aligned requires RAW-derived orientation_fields")
+            profiles[index] = aggregate_along_orientation(response, orientation_fields[index])
+            detail = {"mode": "orientation_aligned", "windows": [],
+                      "slope_min": float(orientation_fields[index].min()),
+                      "slope_max": float(orientation_fields[index].max()),
+                      "orientation_source": "raw_structure_tensor_not_periodic_shift_search"}
+        elif config.strip_aggregation_mode == "slope_aligned":
             profiles[index], detail = _aligned_profile(response, config)
         else:
             for start in range(0, h, config.debug_chunk_rows):
@@ -93,6 +102,52 @@ def make_strip_profiles_diagnostic(gy: np.ndarray, polarity: str, config: Counte
         if config.profile_smooth_sigma > 0:
             profiles[index] = gaussian_filter1d(profiles[index], config.profile_smooth_sigma)
     return profiles, bounds, diagnostics
+
+
+def estimate_strip_orientation(gray: np.ndarray, config: CounterConfig) -> list[np.ndarray]:
+    """Estimate bounded RAW tangent slopes without shifting periodic signals.
+
+    The gradient tensor estimates a local direction, not a paper identity.
+    Low-coherence windows retain zero slope rather than a guessed row lag.
+    """
+    import cv2
+    h, w = gray.shape
+    margin = int(w * config.horizontal_margin_ratio)
+    edges = np.linspace(margin, w-margin, config.num_strips+1, dtype=int)
+    image = gray.astype(np.float32)
+    gx = cv2.Sobel(image, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(image, cv2.CV_32F, 0, 1, ksize=3)
+    fields = []
+    for a, b in zip(edges[:-1], edges[1:]):
+        knots, slopes = [], []
+        for start in range(0, h, config.orientation_window_rows//2 or 1):
+            end = min(h, start+config.orientation_window_rows)
+            dx, dy = gx[start:end, a:b], gy[start:end, a:b]
+            xx, yy, xy = float(np.mean(dx*dx)), float(np.mean(dy*dy)), float(np.mean(dx*dy))
+            coherence = np.sqrt((xx-yy)**2+4*xy*xy) / max(xx+yy, config.epsilon)
+            slope = -xy / max(yy, config.epsilon)
+            if coherence < config.orientation_min_coherence or abs(slope) > config.orientation_max_slope:
+                slope = 0.0
+            knots.append((start+end-1)/2)
+            slopes.append(slope)
+        fields.append(np.interp(np.arange(h), knots, slopes).astype(np.float32))
+    return fields
+
+
+def aggregate_along_orientation(values: np.ndarray, slopes: np.ndarray) -> np.ndarray:
+    """RAW-supported sampling around a strip center; no period-driven warp."""
+    from scipy.ndimage import map_coordinates
+    h, w = values.shape
+    # Bounded column sample count prevents full-image coordinate allocations.
+    xs = np.linspace(0, w-1, min(w, 33))
+    output = np.empty(h, dtype=np.float32)
+    for start in range(0, h, 512):
+        end = min(h, start+512)
+        y = np.arange(start, end)[:, None] + slopes[start:end, None]*(xs[None, :]-(w-1)/2)
+        x = np.broadcast_to(xs[None, :], y.shape)
+        sampled = map_coordinates(values, [y.ravel(), x.ravel()], order=1, mode='nearest').reshape(y.shape)
+        output[start:end] = np.median(sampled, axis=1)
+    return output
 
 
 def make_strip_profiles(gy: np.ndarray, polarity: str, config: CounterConfig) -> tuple[np.ndarray, list[tuple[int, int]]]:

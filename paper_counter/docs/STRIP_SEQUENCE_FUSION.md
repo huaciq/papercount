@@ -1,0 +1,97 @@
+# Independent strip sequences and RAW-supported joint polarity
+
+This is an opt-in extension of the existing tracker, not a rewrite. Historical
+defaults and `configs/experiments/multiscale_positive.yaml` remain available.
+
+## Pipeline and modes
+
+`stack_roi_mode: foreground_envelope` uses unnormalized input and, for color
+images, the brightest channel to detect sufficiently wide sustained foreground.
+It keeps the envelope of all supported regions, including low-texture paper and
+internal gaps. A 50-row context margin preserves illumination/filter/verifier
+context at the first and last sheets. Ambiguous contrast retains the requested
+ROI. This mode assumes dark exterior background; unrelated wide bright objects
+and backgrounds with similar brightness require review. RAW foreground can
+override the historical relative-black mask when its reference has become white
+under broad saturation. This is a permission change, not a paper observation.
+
+`strip_sequence_enabled: true` builds positive and negative candidates separately
+at every configured scale. Same-sign peaks in the unnormalized RAW gradient and
+RAW intensity transitions verify proposals. The RAW transition is mandatory;
+normalized or enhanced-only evidence cannot create a counted observation.
+Cross-scale candidates are deduplicated around their RAW peak locations. Local
+RAW contrast significance distinguishes dominant boundaries from weaker interior
+transitions; the latter remain in diagnostic JSON, not silently labelled false.
+
+Local observability is measured before peak selection from saturation, RAW
+contrast and derivative energy in each strip/window. It is not a calibrated
+probability of correctness. Weights have a positive floor, so missing candidates
+do not automatically disappear from the denominator. A monotone one-to-one edit
+alignment matches boundary sequences with explicit unmatched observations. RAW
+structure-tensor orientation predicts bounded displacement; a periodic shift
+search does not decide layer identity. Local spacing is measured before global
+selection, and multiple ACF hypotheses remain in the output. No missing layer is
+generated from these hypotheses.
+
+The joint polarity mode pairs opposite native edges with RAW bright-body
+morphology. Observed pairs establish same-sheet identity, preventing double
+counting. A sufficiently supported opposite observation may confirm a primary
+fragment or propose a body absent in the primary branch. Its actual measured
+polarity and coordinates remain in each track; opposite evidence is never
+converted into a fictitious primary edge. Mixed-polarity identity verification
+runs with the appropriate paper-side direction for each group.
+
+Three fusion modes are available:
+
+- `shadow`: compute and save independent evidence without changing the established sequence.
+- `augment`: keep the established sequence and admit only an unrepresented,
+  directly observed RAW body with sufficient pair/strip evidence before the
+  terminal identity verifier. Near existing boundaries and close competitions
+  remain diagnostic. No recovery occurs after a terminal rejection.
+- `replace`: count from ordered local fusion directly. It is an experimental
+  option; early real-image tests showed that many-strip-supported interior
+  textures and fragmented duplicate boundaries can survive it. Do not treat
+  replacement as a validated improvement merely because clean synthetic cases pass.
+
+`track_validate_before_claim: true` checks a proposed path before reserving its
+peaks. Hard-invalid paths cannot steal observations from competing paths;
+marginal paths remain available to the historical sequence stage.
+
+`strip_aggregation_mode: orientation_aligned` uses RAW structure-tensor slopes
+to aggregate along tilted edges. Both intensity and gradient use the same local
+sampling coordinates. Low coherence or an excessive slope keeps horizontal
+sampling; orientation is not itself paper evidence. The experimental orientation
+configuration uses replacement to expose its behavior separately from the stable
+augmentation path.
+
+## Outputs
+
+Existing `result_overlay.png`, `debug_info.json`, `profiles.npz`, verifier and
+track plots remain. Full debug also includes `strip_sequence_evidence.png` with
+local observability, two polarity candidate positions and selected observations.
+Each local candidate records RAW contrast, significance, scale sources and pair
+source. Each new track records its actual polarity, weighted support, observed
+positions and body-pair evidence. Weak RAW transitions, unmatched observations,
+unpaired opposite tracks and close competitions remain reviewable. Partial
+tracks are rendered only at observed strips, not as full-width observations.
+
+The experiment runner saves per-image overlays and full JSON by default, plus
+`strip_sequences.npz` for enabled variants. `--full-debug` adds all traditional
+plots in serial mode. It creates a unique directory and never replaces old runs.
+
+## Reproduction
+
+```powershell
+& 'D:\Anc\anaconda3\envs\pytorch\python.exe' -m pytest tests -q
+& 'D:\Anc\anaconda3\envs\pytorch\python.exe' scripts\run_strip_sequence_experiment.py --input 'F:\纸张\数据\pictures' --rotate-ccw --variants baseline roi association single dual replacement oriented --workers 2 --output-root output\strip_sequence_validation
+& 'D:\Anc\anaconda3\envs\pytorch\python.exe' scripts\run_strip_sequence_experiment.py --input 'F:\纸张\数据\260921各纸种4面图集' --rotate-ccw --variants dual --workers 2 --output-root output\strip_sequence_260921
+& 'D:\Anc\anaconda3\envs\pytorch\python.exe' main.py --image IMAGE --rotate-ccw --config configs\experiments\strip_sequence_dual.yaml --output output\UNIQUE_RUN
+```
+
+Configuration/algorithm ablations use count truth for exact image accuracy and
+MAE, not edge Precision/Recall. Historical reviewer marks are partial labels on
+older overlays and often a different boundary polarity; they cannot be reused
+as complete edge truth without coordinate and sheet-identity verification.
+Unlabelled batches are diagnostic only. Runtime excludes rotation/read/save;
+concurrent runs are not isolated latency benchmarks. No 100% accuracy claim is
+supported by this implementation or a tuned regression set.

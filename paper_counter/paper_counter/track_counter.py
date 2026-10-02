@@ -5,7 +5,8 @@ import numpy as np
 from .config import CounterConfig
 from .models import PaperCountResult, PeakCandidate
 from .preprocessing import crop_roi, to_gray, normalize_illumination, signed_gradient_levels, display_preview
-from .profiles import make_strip_profiles_diagnostic, normalize_and_fuse
+from .profiles import (make_strip_profiles_diagnostic, normalize_and_fuse,
+                       estimate_strip_orientation, aggregate_along_orientation)
 from .period import score_polarity, estimate_period
 from .local_detection import detect_strip_peaks
 from .tracking import associate_strip_peaks, validate_tracks, deduplicate_tracks, classify_tracks, deduplicate_obvious_tracks
@@ -38,10 +39,22 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
         top, bottom, active_info = detect_active_stack_roi(gray, None, cfg, original=roi)
     else:
         top, bottom, active_info = detect_active_stack_roi(gray, None, cfg)
+    foreground_invalid_overrides = 0
+    if cfg.stack_roi_mode == "foreground_envelope" and active_info.get("energy") is not None:
+        # The historical relative-black mask can label a mostly saturated
+        # image INVALID when its median background reference is also white.
+        # RAW foreground is independent evidence that these are not dark rows.
+        foreground = active_info["energy"] >= cfg.foreground_roi_min_width_ratio
+        override = foreground & (raw_mask.states == StackState.INVALID)
+        foreground_invalid_overrides = int(override.sum())
+        raw_mask.states[override] = StackState.CORE
+        raw_mask.evidence[override] = True
     roi = roi[top:bottom]
     gray = gray[top:bottom]
     bounds = {**bounds, "y1": bounds["y1"] + top, "y2": bounds["y1"] + bottom}
     normalized = normalize_illumination(gray, cfg.illumination_sigma, cfg.epsilon)
+    orientation_fields = (estimate_strip_orientation(gray, cfg) if
+        cfg.strip_sequence_enabled or cfg.strip_aggregation_mode == "orientation_aligned" else None)
     gradient_levels, native_gy = signed_gradient_levels(normalized, cfg)
     invalid_rows = raw_mask.states[top:bottom] == StackState.INVALID
     native_gy[invalid_rows] = 0
@@ -62,12 +75,12 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
     for polarity in ("positive", "negative"):
         level_profiles, level_details = [], []
         for scale_value, gradient, source in gradient_levels:
-            raw_level, strips, aggregation = make_strip_profiles_diagnostic(gradient, polarity, cfg)
+            raw_level, strips, aggregation = make_strip_profiles_diagnostic(gradient, polarity, cfg, orientation_fields)
             raw_level[:, invalid_rows] = 0
             level_profiles.append(raw_level)
             level_details.append({"scale": scale_value, "source": source,
                                   "aggregation": aggregation})
-        native_raw, _, native_aggregation = make_strip_profiles_diagnostic(native_gy, polarity, cfg)
+        native_raw, _, native_aggregation = make_strip_profiles_diagnostic(native_gy, polarity, cfg, orientation_fields)
         native_raw[:, invalid_rows] = 0
         stack = np.stack(level_profiles)
         winners = np.argmax(stack, axis=0)
@@ -84,8 +97,24 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
                           "native_assessment": score_polarity(native_fused, cfg),
                           "gradient_levels": level_details,
                           "native_aggregation": native_aggregation}
+        if cfg.strip_sequence_enabled:
+            data[polarity]["independent_scale_profiles"] = [
+                (float(detail["scale"]), normalize_and_fuse(level, cfg.epsilon)[0])
+                for detail, level in zip(level_details, level_profiles)]
     raw_intensity_profiles = make_intensity_strip_profiles(gray, strips, cfg.debug_chunk_rows)
     normalized_intensity_profiles = make_intensity_strip_profiles(normalized, strips, cfg.debug_chunk_rows)
+    raw_gradient_profiles = {}
+    if cfg.strip_sequence_enabled:
+        import cv2
+        raw_gy = cv2.Scharr(gray, cv2.CV_32F, 0, 1)
+        for polarity in ("positive", "negative"):
+            raw_gradient_profiles[polarity], _, _ = make_strip_profiles_diagnostic(
+                raw_gy, polarity, cfg, orientation_fields)
+        del raw_gy
+        if cfg.strip_aggregation_mode == "orientation_aligned":
+            for s, (a, b) in enumerate(strips):
+                raw_intensity_profiles[s] = aggregate_along_orientation(gray[:, a:b], orientation_fields[s])
+                normalized_intensity_profiles[s] = aggregate_along_orientation(normalized[:, a:b], orientation_fields[s])
     del normalized, native_gy, gradient_levels, preview_gradient
     chosen = cfg.gradient_polarity
     if chosen == "auto":
@@ -125,7 +154,24 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
     sequence = SequenceResult()
     reuse_attempts, weak_attempts, pool, remaining_gaps = [], [], [], []
     invalid_peak_count = 0
-    if period is not None:
+    strip_consensus_debug, strip_quality = {}, None
+    strip_tracks, strip_rejected = [], []
+    if cfg.strip_sequence_enabled:
+        from .strip_sequence import build_strip_consensus
+        if period is None:
+            period_source = 'bootstrap_spacing_scale_not_periodicity'
+        period = period or (cfg.min_period+cfg.max_period)/2
+        strip_tracks, strip_rejected, strip_local, strip_sequence, strip_candidates, strip_consensus_debug, strip_quality = build_strip_consensus(
+            data, raw_intensity_profiles*(255/np.iinfo(gray.dtype).max), raw_gradient_profiles,
+            gray, strips, orientation_fields, bounds["y1"], period, raw_mask, chosen, cfg)
+        if cfg.strip_sequence_mode == "replace":
+            tracks, rejected, local, sequence, candidates = strip_tracks, strip_rejected, strip_local, strip_sequence, strip_candidates
+            raw_tracks = tracks+rejected
+            strong = list(tracks)
+            marginal = [t for t in rejected if t.reason == "local_evidence_pending"]
+            pool = raw_tracks
+            remaining_gaps = spacing_anomalies(tracks, local, cfg, None)
+    if period is not None and (not cfg.strip_sequence_enabled or cfg.strip_sequence_mode != "replace"):
         candidates, statistics = detect_strip_peaks(
             selected["profiles"], period, cfg, bounds["y1"],
             selected["native_profiles"], selected["scale_sources"])
@@ -190,6 +236,18 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
             rejected.extend(failures)
             tracks = sorted(tracks + recovered, key=lambda t: t.center_y)
             local = estimate_local_period(tracks, period, cfg)
+    if cfg.strip_sequence_enabled and cfg.strip_sequence_mode != "replace":
+        from .strip_sequence import augment_observed_tracks
+        if cfg.strip_sequence_mode == "augment":
+            tracks, augmentation = augment_observed_tracks(tracks, strip_tracks, cfg, chosen)
+            sequence.selected = list(tracks)
+            sequence.rescued.extend(t for t in tracks if t.local_evidence.get('augmentation'))
+            pool = pool + [t for t in tracks if t.local_evidence.get('augmentation')]
+            remaining_gaps = spacing_anomalies(tracks, local, cfg, locals().get('regularity')) if local else []
+            strip_consensus_debug['augmentation'] = augmentation
+        else:
+            strip_consensus_debug['augmentation'] = {'mode': 'shadow', 'added': 0}
+        strip_consensus_debug['fusion_mode'] = cfg.strip_sequence_mode
     positions = [int(round(t.center_y)) for t in tracks]
     def compatibility_peaks(items: list) -> list[PeakCandidate]:
         return [PeakCandidate(int(round(t.center_y)), float(np.median(list(t.strip_peak_strengths.values()))),
@@ -235,12 +293,31 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
                       "track_decisions": [], "recovery_after_verifier": False}
     verifier_rejected = []
     if cfg.final_track_verifier_enabled:
-        identity_features, identity_bundle = analyze_track_identity(
-            tracks, raw_intensity_profiles, normalized_intensity_profiles,
-            data["negative"]["profiles"], data["positive"]["profiles"],
-            bounds["y1"], local, period or (cfg.min_period + cfg.max_period) / 2,
-            regularity, raw_mask, competitions, remaining_gaps, identity_cfg,
-        )
+        if cfg.strip_sequence_dual_enabled and any(t.boundary_polarity and t.boundary_polarity != chosen for t in tracks):
+            bundles = {}
+            for polarity in (chosen, opposite):
+                group = [t for t in tracks if (t.boundary_polarity or chosen) == polarity]
+                if not group:
+                    continue
+                features, bundle = analyze_track_identity(
+                    group, raw_intensity_profiles, normalized_intensity_profiles,
+                    data["negative"]["profiles"], data["positive"]["profiles"],
+                    bounds["y1"], local, period, regularity, raw_mask, competitions,
+                    remaining_gaps, replace(identity_cfg, gradient_polarity=polarity))
+                identity_features.update(features)
+                bundles[polarity] = bundle
+            identity_bundle = bundles[chosen] if chosen in bundles else bundles[opposite]
+            identity_bundle["debug"] = {**identity_bundle["debug"],
+                "per_polarity": {p: b["debug"] for p, b in bundles.items()},
+                "features": [f for b in bundles.values() for f in b["debug"]["features"]],
+                "mixed_boundary_polarities": True}
+        else:
+            identity_features, identity_bundle = analyze_track_identity(
+                tracks, raw_intensity_profiles, normalized_intensity_profiles,
+                data["negative"]["profiles"], data["positive"]["profiles"],
+                bounds["y1"], local, period or (cfg.min_period + cfg.max_period) / 2,
+                regularity, raw_mask, competitions, remaining_gaps, identity_cfg,
+            )
         tracks, verifier_rejected, verifier_debug = apply_final_track_verifier(
             tracks, identity_features, cfg)
         rejected.extend(verifier_rejected)
@@ -260,10 +337,13 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
         "requested_roi": requested_bounds, "active_stack_roi": bounds,
         "active_roi_diagnostics": {k: v for k, v in active_info.items() if k != "energy"},
         "raw_stack_mask": raw_mask.to_dict(), "mask_refinement": locals().get("mask_refinement", {}),
+        "foreground_invalid_overrides": foreground_invalid_overrides,
         "raw_mask_invalid_peaks_removed": invalid_peak_count,
         "invalid_selected_track_count": sum(any(raw_mask.state_at(y) == StackState.INVALID for y in t.strip_positions.values()) for t in tracks),
         "margin_selected_track_ids": [t.track_id for t in tracks if t.raw_mask_state == "MARGIN"],
-        "sequence_model": "period_multiple_comparison" if cfg.sequence_period_multiple_mode else "geometry_ordered_layers",
+        "sequence_model": "independent_strip_ordered_fusion" if cfg.strip_sequence_enabled and cfg.strip_sequence_mode == "replace" else
+                          "period_multiple_comparison" if cfg.sequence_period_multiple_mode else "geometry_ordered_layers",
+        "strip_consensus": strip_consensus_debug,
         "hybrid_mode": "regular_first_geometry_exception" if cfg.regularity_enabled else "geometry_only",
         "regularity": regularity.to_dict() if regularity is not None else {},
         "initial_spacing_scale": period, "local_spacing_scale": local.to_samples() if local else [],
@@ -283,8 +363,9 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
         "evidence_based_recovery_count": len(sequence.rescued),
         "gradient_polarity": chosen, "primary_evidence_polarity": chosen,
         "auxiliary_evidence_polarity": opposite,
-        "counted_boundary": "paper_top" if chosen == "positive" else "paper_bottom",
-        "recovery_evidence_policy": "native_selected_polarity_required",
+        "counted_boundary": "per_track_actual_polarity" if cfg.strip_sequence_dual_enabled else
+                            "paper_top" if chosen == "positive" else "paper_bottom",
+        "recovery_evidence_policy": "unnormalized_raw_observation_required" if cfg.strip_sequence_enabled else "native_selected_polarity_required",
         "period": period, "initial_global_period": period,
         "initial_period_source": period_source, "strip_period_estimates": strip_periods,
         "median_local_period": float(np.median(local.values)) if local is not None and len(local.values) else None,
@@ -321,7 +402,7 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
             "period_evidence": period_source,
             "gradient_scales": cfg.gradient_scales,
             "scale_source": "fixed_config_not_period",
-            "cross_scale_deduplication": "pointwise_max_before_peak_detection",
+            "cross_scale_deduplication": "raw_peak_identity_after_independent_scale_detection" if cfg.strip_sequence_enabled else "pointwise_max_before_peak_detection",
             "enhanced_only_observations_count_as_tracks": False,
             "gradient_levels": {p: [{"scale": level["scale"], "source": level["source"],
                                       "aggregation": level["aggregation"]}
@@ -347,4 +428,7 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
         "raw_stack_mask": raw_mask, "raw_gray_preview": raw_preview,
                 "track_identity": identity_bundle["artifacts"],
                 "strip_candidates": candidates, "local_statistics": statistics, "local_period": local,
+                "strip_quality": strip_quality,
+                "strip_raw_intensity_profiles": raw_intensity_profiles*(255/np.iinfo(gray.dtype).max) if cfg.strip_sequence_enabled else None,
+                "strip_raw_gradient_profiles": raw_gradient_profiles,
                 "active_energy": active_info.get("energy"), "active_energy_y_offset": requested_bounds["y1"]}, tracks, rejected)

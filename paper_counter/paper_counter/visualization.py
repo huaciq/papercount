@@ -56,7 +56,13 @@ def save_overlay(result: PaperCountResult, directory: Path, config: CounterConfi
                 if len(points) > 1:
                     cv2.polylines(canvas, [points], False, color, 1)
                 elif len(points):
-                    cv2.circle(canvas, tuple(points[0]), 1, color, -1)
+                    if config.strip_sequence_enabled:
+                        s, y = next(iter(track.strip_positions.items()))
+                        a, b = strips[s]
+                        row = int(round((y-offset)*scale_y))
+                        cv2.line(canvas, (int(a*scale_x), row), (int(b*scale_x), row), color, 1)
+                    else:
+                        cv2.circle(canvas, tuple(points[0]), 1, color, -1)
         raw_mask = result.debug_info.get("raw_stack_mask", {})
         for name, color in (("CORE", (255, 255, 0)), ("MARGIN", (0, 165, 255))):
             for limits in raw_mask.get("intervals", {}).get(name, []):
@@ -197,6 +203,13 @@ def save_debug(result: PaperCountResult, output: str | Path, config: CounterConf
         if energy is not None:
             arrays["active_row_energy"] = energy
             arrays["active_energy_original_y"] = np.arange(len(energy)) + result.artifacts["active_energy_y_offset"]
+        if result.debug_info.get('strip_consensus'):
+            from .track_visualization import plot_strip_sequences
+            plot_strip_sequences(result, directory)
+            arrays['strip_local_quality'] = result.artifacts['strip_quality']
+            arrays['strip_original_intensity_8bit'] = result.artifacts['strip_raw_intensity_profiles']
+            for polarity, gradient in result.artifacts['strip_raw_gradient_profiles'].items():
+                arrays[polarity+'_unnormalized_original_gradient'] = gradient
     np.savez_compressed(directory / "profiles.npz", **arrays)
     with (directory / "debug_info.json").open("w", encoding="utf-8") as stream:
         json.dump(result.debug_info, stream, ensure_ascii=False, indent=2, allow_nan=False)

@@ -7,6 +7,34 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+def plot_strip_sequences(result, output: Path) -> None:
+    """RAW candidate locations, quality and final observations on shared Y."""
+    diagnostic = result.debug_info.get('strip_consensus', {})
+    if not diagnostic:
+        return
+    quality = result.artifacts['strip_quality']
+    offset = result.debug_info['roi']['y1']
+    fig, axes = plt.subplots(3, 1, figsize=(17, 9), sharex=True, constrained_layout=True)
+    axes[0].imshow(quality, extent=[offset, offset+quality.shape[1], quality.shape[0]-.5, -.5],
+                   aspect='auto', vmin=0, vmax=1, cmap='viridis')
+    axes[0].set(ylabel='Strip', title='RAW local observability (not probability of correctness)')
+    for ax, polarity in zip(axes[1:], ('positive', 'negative')):
+        for row in diagnostic['polarities'][polarity]['strips']:
+            observations = row['observations']
+            ax.scatter([o['y'] for o in observations], [row['strip']]*len(observations),
+                       s=[8+16*o['pair_score'] for o in observations], color='steelblue', alpha=.4)
+        for track in result.paper_edge_tracks:
+            if (track.boundary_polarity or result.gradient_polarity) == polarity:
+                positions = sorted(track.strip_positions.items())
+                ax.scatter([y for s, y in positions], [s for s, y in positions], c='green', s=12)
+        ax.set(ylabel='Strip', title=f'{polarity}: blue RAW-supported candidates; green final observations')
+        ax.invert_yaxis()
+        ax.grid(alpha=.15)
+    axes[-1].set_xlabel('Rotated detection image Y (px); no title offset')
+    fig.savefig(output/'strip_sequence_evidence.png', dpi=140)
+    plt.close(fig)
+
+
 def plot_track_identity_profiles(identity: dict, identity_debug: dict, output: Path) -> None:
     """Plot per-image robust template and suspicious track-aligned profiles."""
     profiles = identity.get("profiles", {})

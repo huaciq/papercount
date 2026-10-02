@@ -29,6 +29,22 @@ class CounterConfig:
     gradient_scales: list[float] = field(default_factory=lambda: [0.0, 0.7, 1.4])
     multiscale_raw_support_ratio: float = 0.10
     multiscale_raw_support_radius: int = 2
+    # Independent local sequences and ordered fusion are explicit experiments.
+    strip_sequence_enabled: bool = False
+    strip_sequence_mode: str = "augment"
+    strip_sequence_dual_enabled: bool = False
+    strip_sequence_quality_enabled: bool = True
+    strip_sequence_min_observations: int = 2
+    strip_sequence_min_weighted_support: float = 0.38
+    strip_sequence_single_pair_score: float = 0.80
+    strip_sequence_raw_min_contrast: float = 2.0
+    strip_sequence_min_raw_significance: float = 0.30
+    strip_sequence_match_ratio: float = 0.38
+    strip_sequence_pair_max_ratio: float = 1.25
+    strip_sequence_period_window_rows: int = 256
+    orientation_window_rows: int = 96
+    orientation_max_slope: float = 0.60
+    orientation_min_coherence: float = 0.35
     algorithm: str = "tracks"
     local_window_periods: float = 8.0
     strong_prominence_k: float = 2.0
@@ -39,6 +55,7 @@ class CounterConfig:
     track_shift_penalty: float = 0.25
     track_curvature_penalty: float = 0.15
     track_skip_penalty: float = 0.4
+    track_validate_before_claim: bool = False
     max_skip_strips: int = 2
     min_strong_support: int = 2
     min_absolute_track_support: int = 3
@@ -176,7 +193,7 @@ class CounterConfig:
     stack_roi_mode: str = "texture"
     foreground_roi_min_width_ratio: float = 0.18
     foreground_roi_contrast_ratio: float = 0.04
-    foreground_roi_margin_rows: int = 12
+    foreground_roi_margin_rows: int = 50
     stack_energy_smooth_periods: float = 1.0
     stack_roi_margin_ratio: float = 1.0
     stack_energy_threshold_ratio: float = 0.08
@@ -363,8 +380,19 @@ class CounterConfig:
             raise ValueError("Identity score weights must be finite nonnegative with positive sum")
         if self.gradient_polarity not in {"auto", "positive", "negative"}:
             raise ValueError("gradient_polarity must be auto, positive or negative")
-        if self.strip_aggregation_mode not in {"median", "narrow_median", "slope_aligned"}:
-            raise ValueError("strip_aggregation_mode must be median, narrow_median or slope_aligned")
+        if self.strip_aggregation_mode not in {"median", "narrow_median", "slope_aligned", "orientation_aligned"}:
+            raise ValueError("Unsupported strip_aggregation_mode")
+        if self.strip_sequence_dual_enabled and not self.strip_sequence_enabled:
+            raise ValueError("strip_sequence_dual_enabled requires strip_sequence_enabled")
+        if self.strip_sequence_mode not in {"augment", "replace", "shadow"}:
+            raise ValueError("strip_sequence_mode must be augment, replace or shadow")
+        for name in ("strip_sequence_min_weighted_support", "strip_sequence_single_pair_score",
+                     "strip_sequence_match_ratio", "orientation_min_coherence", "strip_sequence_min_raw_significance"):
+            if not 0 < getattr(self, name) <= 1:
+                raise ValueError(f"{name} must be in (0,1]")
+        for name in ("strip_sequence_min_observations", "strip_sequence_period_window_rows", "orientation_window_rows"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name} must be positive")
         if not 0 < self.strip_width_ratio <= 1:
             raise ValueError("strip_width_ratio must be in (0,1]")
         if (self.directional_sigma_x < 0 or self.directional_sigma_y < 0 or
