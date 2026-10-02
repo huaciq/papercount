@@ -34,7 +34,10 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
     # when a scratch splits an otherwise empty black border.  Locate the main
     # sustained texture interval independently, then retain the raw mask for
     # candidate/track permission inside that interval.
-    top, bottom, active_info = detect_active_stack_roi(gray, None, cfg)
+    if cfg.stack_roi_mode == "foreground_envelope":
+        top, bottom, active_info = detect_active_stack_roi(gray, None, cfg, original=roi)
+    else:
+        top, bottom, active_info = detect_active_stack_roi(gray, None, cfg)
     roi = roi[top:bottom]
     gray = gray[top:bottom]
     bounds = {**bounds, "y1": bounds["y1"] + top, "y2": bounds["y1"] + bottom}

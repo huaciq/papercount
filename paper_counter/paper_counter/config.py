@@ -173,6 +173,10 @@ class CounterConfig:
     positive_aux_weight: float = 0.05
     positive_aux_search_ratio: float = 0.50
     auto_stack_roi: bool = True
+    stack_roi_mode: str = "texture"
+    foreground_roi_min_width_ratio: float = 0.18
+    foreground_roi_contrast_ratio: float = 0.04
+    foreground_roi_margin_rows: int = 12
     stack_energy_smooth_periods: float = 1.0
     stack_roi_margin_ratio: float = 1.0
     stack_energy_threshold_ratio: float = 0.08
@@ -253,6 +257,11 @@ class CounterConfig:
                 raise ValueError(f"{name} must be finite and nonnegative")
         if self.algorithm not in {"legacy", "tracks"}:
             raise ValueError("algorithm must be legacy or tracks")
+        if self.stack_roi_mode not in {"texture", "foreground_envelope"}:
+            raise ValueError("stack_roi_mode must be texture or foreground_envelope")
+        for name in ("foreground_roi_min_width_ratio", "foreground_roi_contrast_ratio"):
+            if not 0 < getattr(self, name) < 1:
+                raise ValueError(f"{name} must be in (0,1)")
         if self.track_curve_method != "piecewise_linear":
             raise ValueError("Only shape-preserving piecewise_linear curves are supported")
         if not 0 < self.raw_mask_background_percentile < 50:
