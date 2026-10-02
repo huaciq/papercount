@@ -77,17 +77,26 @@ def extract_track_aligned_profiles(track: PaperEdgeTrack, local_spacing: float,
                                    negative_profiles: np.ndarray,
                                    positive_profiles: np.ndarray,
                                    y_offset: float, config: CounterConfig) -> AlignedTrackProfiles:
-    """Sample each observed strip around its own curve Y then median aggregate."""
+    """Sample around observed Y in a canonical paper-to-dark direction.
+
+    For positive boundaries the local Y axis is reversed and polarity channels
+    are exchanged. Historical negative/above fields then mean primary/paper-side;
+    global track coordinates remain untouched.
+    """
     relative = np.linspace(-config.identity_profile_extent_ratio,
                            config.identity_profile_extent_ratio,
                            config.identity_profile_samples)
-    arrays = (raw_profiles, normalized_profiles, negative_profiles, positive_profiles)
+    positive_primary = config.gradient_polarity == "positive"
+    direction = -1.0 if positive_primary else 1.0
+    arrays = (raw_profiles, normalized_profiles,
+              positive_profiles if positive_primary else negative_profiles,
+              negative_profiles if positive_primary else positive_profiles)
     sampled: list[list[np.ndarray]] = [[] for _ in arrays]
     for strip, y in sorted(track.strip_positions.items()):
         if not 0 <= int(strip) < raw_profiles.shape[0]:
             continue
-        coordinates = float(y) - float(y_offset) + relative * max(local_spacing, config.epsilon)
-        if coordinates[0] < 0 or coordinates[-1] > raw_profiles.shape[1] - 1:
+        coordinates = float(y) - float(y_offset) + direction * relative * max(local_spacing, config.epsilon)
+        if np.min(coordinates) < 0 or np.max(coordinates) > raw_profiles.shape[1] - 1:
             continue
         for target, source in zip(sampled, arrays):
             target.append(np.interp(coordinates, np.arange(source.shape[1]), source[int(strip)]))
@@ -288,15 +297,15 @@ def _paper_score(level: float, mask: RawStackMask, config: CounterConfig) -> flo
     return _clip01((level - background) / (paper - background))
 
 
-def _mask_context(y: float, spacing: float, mask: RawStackMask) -> dict[str, Any]:
-    above_y, below_y = y - .25 * spacing, y + .25 * spacing
+def _mask_context(y: float, spacing: float, mask: RawStackMask, direction: float = 1.0) -> dict[str, Any]:
+    above_y, below_y = y - direction * .25 * spacing, y + direction * .25 * spacing
     above, below = mask.state_at(above_y), mask.state_at(below_y)
     transitions = np.flatnonzero(np.diff(mask.states.astype(int)) != 0) + mask.offset
     distance = float(np.min(np.abs(transitions - y))) if len(transitions) else float(len(mask.states))
     return {"above": StackState(above).name, "below": StackState(below).name,
             "distance": distance,
-            "connected_above": bool(above == StackState.INVALID and above_y < y),
-            "connected_below": bool(below == StackState.INVALID and below_y > y)}
+            "connected_above": bool(above == StackState.INVALID),
+            "connected_below": bool(below == StackState.INVALID)}
 
 
 def background_false_evidence(paper_support_above: float, background_connected_above: bool,
@@ -329,18 +338,20 @@ def conservative_identity_decision(families: list[str], needs_verification: bool
 def _positive_pair(track: PaperEdgeTrack, spacing: float, positive_profiles: np.ndarray,
                    y_offset: float, config: CounterConfig) -> dict[str, float]:
     offsets, strengths = [], []
+    direction = -1.0 if config.gradient_polarity == "positive" else 1.0
     for strip, y in track.strip_positions.items():
         signal = positive_profiles[int(strip)]
         center = float(y) - y_offset
-        a = max(0, int(np.floor(center - 1.20 * spacing)))
-        b = min(len(signal), int(np.ceil(center - .10 * spacing)) + 1)
+        endpoints = (center - direction * 1.20 * spacing, center - direction * .10 * spacing)
+        a = max(0, int(np.floor(min(endpoints))))
+        b = min(len(signal), int(np.ceil(max(endpoints))) + 1)
         if b <= a:
             continue
         local = signal[a:b]
         index = int(np.argmax(local))
         strength = float(local[index])
         if strength >= config.identity_positive_pair_min_response:
-            offsets.append(center - (a + index))
+            offsets.append(direction * (center - (a + index)))
             strengths.append(strength)
     support = len(offsets) / max(1, len(track.strip_positions))
     median = float(np.median(offsets)) if offsets else 0.0
@@ -437,8 +448,10 @@ def analyze_track_identity(tracks: list[PaperEdgeTrack], raw_profiles: np.ndarra
         below_norm = _region(profile.normalized, profile.relative_y, .05, .45)
         paper_above = _paper_score(above["median"], raw_mask, config)
         paper_below = _paper_score(below["median"], raw_mask, config)
-        mask_context = _mask_context(track.center_y, spacing, raw_mask)
-        pair = _positive_pair(track, spacing, positive_profiles, y_offset, config)
+        direction = -1.0 if config.gradient_polarity == "positive" else 1.0
+        mask_context = _mask_context(track.center_y, spacing, raw_mask, direction)
+        pair_profiles = negative_profiles if config.gradient_polarity == "positive" else positive_profiles
+        pair = _positive_pair(track, spacing, pair_profiles, y_offset, config)
         dark, rebound, transition = _transition_features(profile.raw, profile.relative_y)
         contrast_by_strip = []
         for row in profile.raw_by_strip:
@@ -560,6 +573,11 @@ def analyze_track_identity(tracks: list[PaperEdgeTrack], raw_profiles: np.ndarra
             families, feature.needs_final_verification, feature.identity_z_score, config)
 
     debug = {
+        "primary_polarity": config.gradient_polarity,
+        "profile_coordinate_system": "canonical paper-to-dark; global track Y unchanged",
+        "physical_paper_side": "below" if config.gradient_polarity == "positive" else "above",
+        "legacy_field_semantics": {"negative": "primary gradient", "positive": "opposite gradient",
+                                   "above": "paper side", "below": "gap side"},
         "template": template.to_debug_dict(),
         "reference_track_ids": template.reference_track_ids,
         "template_distance_distribution": {"median": distance_center, "mad_scale": distance_scale},

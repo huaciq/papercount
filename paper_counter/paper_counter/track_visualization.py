@@ -18,8 +18,11 @@ def plot_track_identity_profiles(identity: dict, identity_debug: dict, output: P
     suspicious = [track_id for track_id, row in decisions.items()
                   if row.get("needs_final_verification")]
     fig, axes = plt.subplots(4, 1, figsize=(12, 11), sharex=True, constrained_layout=True)
-    for ax, name, label in zip(axes, ("raw", "normalized", "negative", "positive"),
-                               ("RAW gray", "Normalized intensity", "Negative gradient", "Positive gradient")):
+    positive_primary = identity_debug.get("primary_polarity") == "positive"
+    labels = ("RAW gray", "Normalized intensity",
+              "Primary: positive gradient" if positive_primary else "Primary: negative gradient",
+              "Opposite: negative gradient" if positive_primary else "Opposite: positive gradient")
+    for ax, name, label in zip(axes, ("raw", "normalized", "negative", "positive"), labels):
         ax.plot(relative, getattr(template, name), color="black", lw=2, label="per-image median template")
         for track_id in suspicious[:20]:
             if track_id not in profiles:
@@ -31,7 +34,7 @@ def plot_track_identity_profiles(identity: dict, identity_debug: dict, output: P
         ax.set_ylabel(label)
         ax.grid(alpha=.15)
     axes[0].legend(fontsize=8)
-    axes[-1].set_xlabel("Relative Y / local spacing")
+    axes[-1].set_xlabel("Canonical offset / local spacing (negative: paper side; positive: gap side)")
     fig.suptitle("Track-aligned boundary identity profiles (black template; suspicious tracks overlaid)")
     fig.savefig(output / "track_identity_profiles.png", dpi=145)
     plt.close(fig)

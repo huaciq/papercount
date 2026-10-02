@@ -1,5 +1,6 @@
 """Multi-strip-first counting; global profile is only a scale prior/debug signal."""
 from __future__ import annotations
+from dataclasses import replace
 import numpy as np
 from .config import CounterConfig
 from .models import PaperCountResult, PeakCandidate
@@ -87,6 +88,9 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
     if chosen == "auto":
         chosen = max(data, key=lambda p: (data[p]["assessment"]["score"], data[p]["assessment"]["acf_score"]))
     selected = data[chosen]
+    opposite = "positive" if chosen == "negative" else "negative"
+    # Resolve auto before the identity verifier interprets boundary direction.
+    identity_cfg = replace(cfg, gradient_polarity=chosen)
     use_native_period = cfg.enhanced_period_from_native and (
         cfg.directional_smoothing_enabled or cfg.multiscale_gradient_enabled)
     period_assessment = selected["native_assessment"] if use_native_period else selected["assessment"]
@@ -145,14 +149,15 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
             anchors = [t for t in sequence.selected if t.candidate_class == "strong"]
             hypotheses = recovery_hypotheses(anchors, local, cfg, regularity)
             auxiliary = None
-            if chosen == "negative" and cfg.positive_aux_weight > 0:
+            if cfg.positive_aux_weight > 0:
                 auxiliary, _ = detect_strip_peaks(
-                    data["positive"]["profiles"], period, cfg, bounds["y1"],
-                    data["positive"]["native_profiles"], data["positive"]["scale_sources"])
+                    data[opposite]["profiles"], period, cfg, bounds["y1"],
+                    data[opposite]["native_profiles"], data[opposite]["scale_sources"])
                 auxiliary = filter_mask_peaks(auxiliary, raw_mask)
             added, failures, reuse_attempts, weak_attempts = recover_sequence_candidates(
                 hypotheses, candidates, sequence.selected, pool, valid, cfg, auxiliary,
-                raw_mask=raw_mask, negative_evidence=chosen == "negative", regularity=regularity)
+                raw_mask=raw_mask, negative_evidence=chosen == "negative", regularity=regularity,
+                primary_evidence=True)
             pool, more_duplicates = deduplicate_obvious_tracks(pool + added)
             sequence = optimize_vertical_sequence(pool, local, cfg, regularity)
             tracks, recovered = sequence.selected, sequence.rescued
@@ -173,12 +178,11 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
             local = estimate_local_period(tracks, period, cfg)
             hypotheses = missing_edge_hypotheses(tracks, local, cfg)
             auxiliary = None
-            if chosen == "negative" and cfg.positive_aux_weight > 0:
-                auxiliary, _ = detect_strip_peaks(data["positive"]["profiles"], period, cfg, bounds["y1"])
+            if cfg.positive_aux_weight > 0:
+                auxiliary, _ = detect_strip_peaks(data[opposite]["profiles"], period, cfg, bounds["y1"],
+                    data[opposite]["native_profiles"], data[opposite]["scale_sources"])
             recovery_candidates = [[p for p in strip if raw_mask.state_at(p.y) == StackState.CORE or
                 (cfg.margin_allow_weak_recovery and raw_mask.state_at(p.y) == StackState.MARGIN)] for strip in candidates]
-            if cfg.recovery_require_negative_evidence and chosen != "negative":
-                recovery_candidates = [[] for _ in candidates]
             recovered, failures, attempts = recover_weak_tracks(hypotheses, recovery_candidates, tracks, valid, cfg, auxiliary)
             rejected.extend(failures)
             tracks = sorted(tracks + recovered, key=lambda t: t.center_y)
@@ -232,7 +236,7 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
             tracks, raw_intensity_profiles, normalized_intensity_profiles,
             data["negative"]["profiles"], data["positive"]["profiles"],
             bounds["y1"], local, period or (cfg.min_period + cfg.max_period) / 2,
-            regularity, raw_mask, competitions, remaining_gaps, cfg,
+            regularity, raw_mask, competitions, remaining_gaps, identity_cfg,
         )
         tracks, verifier_rejected, verifier_debug = apply_final_track_verifier(
             tracks, identity_features, cfg)
@@ -274,7 +278,11 @@ def process_tracks(image: np.ndarray, cfg: CounterConfig) -> PaperCountResult:
         "short_gap_suppression_count": sum(t.reason == "sequence_suppressed_short_gap" for t in sequence.suppressed),
         "large_gap_anomaly_count": sum(p["large_gap_anomaly"] for p in selected_pairs),
         "evidence_based_recovery_count": len(sequence.rescued),
-        "gradient_polarity": chosen, "period": period, "initial_global_period": period,
+        "gradient_polarity": chosen, "primary_evidence_polarity": chosen,
+        "auxiliary_evidence_polarity": opposite,
+        "counted_boundary": "paper_top" if chosen == "positive" else "paper_bottom",
+        "recovery_evidence_policy": "native_selected_polarity_required",
+        "period": period, "initial_global_period": period,
         "initial_period_source": period_source, "strip_period_estimates": strip_periods,
         "median_local_period": float(np.median(local.values)) if local is not None and len(local.values) else None,
         "local_period_samples": local.to_samples() if local is not None else [],

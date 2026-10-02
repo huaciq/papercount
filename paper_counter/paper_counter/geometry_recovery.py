@@ -66,8 +66,8 @@ def geometry_recovery_regions(tracks, local, cfg, regularity=None):
 
 def recover_geometry_candidates(hypotheses, candidates, existing, pool, valid_count, cfg,
                                 auxiliary=None, raw_mask=None, negative_evidence=True,
-                                regularity=None):
-    """Reuse complete tracks, otherwise associate real negative nodes in CORE."""
+                                regularity=None, primary_evidence=None):
+    """Reuse complete tracks, otherwise associate observed primary-polarity nodes."""
     added, rejected, reuse_attempts, weak_attempts = [], [], [], []
     occupied = {(p.strip_index, p.y) for t in existing + pool for p in t.peak_candidates}
     selected_ids = {t.track_id for t in existing}
@@ -93,8 +93,12 @@ def recover_geometry_candidates(hypotheses, candidates, existing, pool, valid_co
             "reason": "recovery_no_image_evidence", "regularity": r,
             "recovery_mode": "period_assisted" if r >= cfg.regularity_regular_threshold else "geometry_only"}
         weak_attempts.append(attempt)
-        if cfg.recovery_require_negative_evidence and not negative_evidence:
-            attempt["reason"] = "recovery_negative_evidence_required"
+        evidence_required = (cfg.recovery_require_primary_evidence if primary_evidence is not None
+                             else cfg.recovery_require_negative_evidence)
+        has_evidence = primary_evidence if primary_evidence is not None else negative_evidence
+        if evidence_required and not has_evidence:
+            attempt["reason"] = ("recovery_primary_evidence_required" if primary_evidence is not None
+                                 else "recovery_negative_evidence_required")
             continue
         mask_rejected = 0
         def eligible(p):
@@ -132,7 +136,8 @@ def recover_geometry_candidates(hypotheses, candidates, existing, pool, valid_co
         eligible_tracks = []
         for track in accepted:
             track.candidate_class = "marginal"
-            track.classification_reason = "weak_negative_image_evidence"
+            track.classification_reason = ("weak_primary_image_evidence" if primary_evidence is not None
+                                           else "weak_negative_image_evidence")
             if raw_mask is None or track_mask_permission(track, raw_mask, cfg, recovery=True):
                 eligible_tracks.append(track)
             else:

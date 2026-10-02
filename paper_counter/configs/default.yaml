@@ -175,6 +175,8 @@ sequence_min_shared_strips: 3
 sequence_min_geometric_gap: 0.5
 sequence_gap_derivative_ratio: 0.50
 recovery_require_negative_evidence: true
+# Main pipeline: require observations of the selected primary polarity.
+recovery_require_primary_evidence: true
 geometry_confidence_ambiguity_penalty: 0.60
 geometry_confidence_ambiguity_exponent: 2.0
 min_track_smoothness: 0.45

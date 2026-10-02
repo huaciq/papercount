@@ -76,7 +76,7 @@ def recover_sequence_candidates(hypotheses: list[dict], candidates: list[list[St
                                 valid_count: int, cfg: CounterConfig,
                                 auxiliary: list[list[StripPeakCandidate]] | None = None,
                                 raw_mask=None, negative_evidence: bool = True,
-                                regularity=None
+                                regularity=None, primary_evidence=None
                                 ) -> tuple[list[PaperEdgeTrack], list[PaperEdgeTrack], list[dict], list[dict]]:
     """Return only new observed paths; pool reuse never truncates or duplicates them.
 
@@ -87,12 +87,17 @@ def recover_sequence_candidates(hypotheses: list[dict], candidates: list[list[St
     if not cfg.sequence_period_multiple_mode:
         from .geometry_recovery import recover_geometry_candidates
         return recover_geometry_candidates(hypotheses, candidates, existing, pool, valid_count,
-                                           cfg, auxiliary, raw_mask, negative_evidence, regularity)
+                                           cfg, auxiliary, raw_mask, negative_evidence, regularity,
+                                           primary_evidence)
     added, rejected, reuse_attempts, weak_attempts = [], [], [], []
     occupied = {(p.strip_index, p.y) for t in existing + pool for p in t.peak_candidates}
     selected_ids = {t.track_id for t in existing}
     for hypothesis in hypotheses:
         if not hypothesis["search"]:
+            continue
+        if cfg.recovery_require_primary_evidence and primary_evidence is False:
+            weak_attempts.append({"raw_track_count": 0, "accepted_candidate_ids": [],
+                                  "reason": "recovery_primary_evidence_required"})
             continue
         period = hypothesis["local_period"]
         reusable = [t for t in pool if t.candidate_class in {"strong", "marginal"}

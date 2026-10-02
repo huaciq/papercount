@@ -124,6 +124,9 @@ class CounterConfig:
     sequence_min_geometric_gap: float = 0.5
     sequence_gap_derivative_ratio: float = 0.50
     recovery_require_negative_evidence: bool = True
+    # Pipeline recovery requires native evidence of the selected polarity.
+    # The negative-only flag above remains for legacy direct recovery callers.
+    recovery_require_primary_evidence: bool = True
     geometry_confidence_ambiguity_penalty: float = 0.60
     geometry_confidence_ambiguity_exponent: float = 2.0
     geometry_confidence_weights: dict[str, float] = field(default_factory=lambda: {
