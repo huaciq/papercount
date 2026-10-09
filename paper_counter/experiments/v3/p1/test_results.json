@@ -1,0 +1,8 @@
+{
+  "p1_tests": 24,
+  "full_tests": 239,
+  "warnings": 2,
+  "full_seconds": 100.39,
+  "warning_source": "existing track_visualization empty legends",
+  "result": "passed"
+}
