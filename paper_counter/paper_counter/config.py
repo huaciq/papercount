@@ -2,15 +2,41 @@ from __future__ import annotations
 
 """Validated, serializable algorithm configuration."""
 
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import InitVar, asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 
+RETIRED_CONFIG_OPTIONS=frozenset({'pass2_exception_only','identity_low_template_similarity',
+    'mixed_spacing_prior_weight','regular_gap_multiple_tolerance','raw_mask_brightness_k',
+    'raw_mask_close_ratio','raw_mask_min_active_ratio'})
+
 
 @dataclass
 class CounterConfig:
+    # One coherent model profile instead of another set of independent patches.
+    evidence_model: bool = False
+    compressed_layers_enabled: bool = False
+    composite_layers_enabled: bool = False
+    auto_geometry_enabled: bool = False
+    geometry_target_spacing: float = 14.0
+    tracks_geometry_preserve_extent: bool = True
+    # Optional tracks-specific frontend.  It is deliberately opt-in so the
+    # historical E3.3 result remains reproducible while the horizontal-stack
+    # variant can be evaluated independently.
+    tracks_preprocessing_enabled: bool = False
+    tracks_gap_enhancement_enabled: bool = False
+    tracks_gap_kernel_width_ratio: float = 0.08
+    tracks_gap_kernel_height: int = 3
+    tracks_gap_gain: float = 0.75
+    tracks_horizontal_smoothing_sigma_x: float = 2.0
+    tracks_horizontal_smoothing_sigma_y: float = 0.35
+    tracks_postprocessing_enabled: bool = False
+    tracks_post_min_gap_ratio: float = 0.20
+    narrow_width: int = 225
+    region_structure: str = 'auto'
+    region_signal_mode: str = 'three_strip'
     roi: Optional[dict[str, int]] = None
     illumination_sigma: float = 15.0
     epsilon: float = 1e-6
@@ -34,6 +60,12 @@ class CounterConfig:
     strip_sequence_mode: str = "augment"
     strip_sequence_scale_consensus_enabled: bool = False
     strip_sequence_raw_body_safeguard_enabled: bool = False
+    raw_period_consensus_enabled: bool = False
+    strip_sequence_adaptive_body_dedup_enabled: bool = False
+    strip_sequence_best_boundary_enabled: bool = False
+    raw_polarity_consensus_enabled: bool = False
+    oriented_association_enabled: bool = False
+    shared_raw_body_dedup_enabled: bool = False
     strip_sequence_dual_enabled: bool = False
     strip_sequence_quality_enabled: bool = True
     strip_sequence_min_observations: int = 2
@@ -87,22 +119,22 @@ class CounterConfig:
     regularity_irregular_threshold: float = 0.40
     adaptive_period_reasoning: bool = True
     regular_spacing_prior_weight: float = 0.30
-    mixed_spacing_prior_weight: float = 0.12
+    mixed_spacing_prior_weight: InitVar[float] = 0.12
     irregular_spacing_prior_weight: float = 0.02
     regular_large_gap_search_enabled: bool = True
-    regular_gap_multiple_tolerance: float = 0.25
+    regular_gap_multiple_tolerance: InitVar[float] = 0.25
     regular_recovery_weak_threshold_scale: float = 0.85
     regular_recovery_support_relaxation: float = 0.85
     regular_recovery_search_ratio: float = 0.35
     irregular_gap_search_enabled: bool = False
     raw_stack_mask_enabled: bool = True
-    raw_mask_brightness_k: float = 4.0
+    raw_mask_brightness_k: InitVar[float] = 4.0
     raw_mask_texture_k: float = 4.0
     raw_mask_background_percentile: float = 20.0
     raw_mask_relative_floor: float = 0.005
-    raw_mask_close_ratio: float = 2.0
+    raw_mask_close_ratio: InitVar[float] = 2.0
     raw_mask_margin_spacing_ratio: float = 1.0
-    raw_mask_min_active_ratio: float = 0.005
+    raw_mask_min_active_ratio: InitVar[float] = 0.005
     raw_mask_boundary_padding_ratio: float = 0.10
     raw_mask_min_track_evidence_ratio: float = 0.60
     margin_allow_marginal: bool = True
@@ -116,7 +148,8 @@ class CounterConfig:
     mask_min_black_run: int = 3
     mask_refine_with_strong_tracks: bool = True
     mask_refine_max_spacing_ratio: float = 1.5
-    pass2_exception_only: bool = True
+    # 历史配置兼容入口；原来只控制日志显隐，不改变第二遍算法。
+    pass2_exception_only: InitVar[bool] = True
     track_curve_method: str = "piecewise_linear"
     track_curve_max_interpolation_gap: int = 3
     track_curve_observation_uncertainty: float = 0.5
@@ -209,7 +242,24 @@ class CounterConfig:
     # decisions after all recovery, without changing the count.
     final_track_verifier_enabled: bool = True
     final_track_verifier_shadow_mode: bool = True
+    # Explicit E1 experiment; historical baseline/dual remain unchanged.
+    endpoint_identity_v2_enabled: bool = False
+    partial_endpoint_identity_enabled: bool = False
+    isolated_raw_component_enabled: bool = False
+    isolated_dark_track_guard_enabled: bool = False
+    auxiliary_order_guard_enabled: bool = False
+    recovered_raw_body_guard_enabled: bool = False
+    foreground_endpoint_identity_enabled: bool = False
+    auxiliary_verified_body_dedup_enabled: bool = False
+    endpoint_reassociation_enabled: bool = False
+    endpoint_roi_band_ratio: float = 1.0
+    endpoint_min_raw_body_support: float = 0.60
+    endpoint_min_foreground_support: float = 0.60
+    endpoint_raw_contrast_ratio: float = 0.10
+    endpoint_background_penalty: float = 0.15
+    endpoint_min_evidence_score: float = 0.55
     identity_profile_samples: int = 81
+    raw_final_observation_guard_enabled: bool = False
     identity_profile_extent_ratio: float = 0.60
     identity_template_min_tracks: int = 5
     identity_template_trim_mad_k: float = 4.0
@@ -225,7 +275,8 @@ class CounterConfig:
     identity_low_positive_pair_score: float = 0.10
     identity_suspicious_outlier_z: float = 3.0
     identity_reject_outlier_z: float = 4.0
-    identity_low_template_similarity: float = 0.45
+    # 已停用：当前身份判断使用独立模板距离，不使用此相似度阈值。
+    identity_low_template_similarity: InitVar[float] = 0.45
     identity_low_strip_consistency: float = 0.25
     identity_low_negative_isolation: float = 0.25
     identity_min_reject_evidence_families: int = 2
@@ -262,11 +313,14 @@ class CounterConfig:
     display_max_width: int = 1600
     debug_chunk_rows: int = 1024
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, mixed_spacing_prior_weight=.12, regular_gap_multiple_tolerance=.25,
+                      raw_mask_brightness_k=4.,raw_mask_close_ratio=2.,raw_mask_min_active_ratio=.005,
+                      pass2_exception_only=True, identity_low_template_similarity=.45) -> None:
         """Reject invalid parameters before any image processing."""
         import math
-        from typing import get_type_hints
-        for name, kind in get_type_hints(type(self)).items():
+        for item in fields(self):
+            name = item.name
+            kind = {'bool':bool,'int':int,'float':float}.get(item.type, item.type)
             value = getattr(self, name)
             if kind is bool and type(value) is not bool:
                 raise ValueError(f"{name} must be boolean")
@@ -274,8 +328,38 @@ class CounterConfig:
                 raise ValueError(f"{name} must be a nonnegative integer")
             if kind is float and (type(value) not in (int, float) or not math.isfinite(value) or value < 0):
                 raise ValueError(f"{name} must be finite and nonnegative")
-        if self.algorithm not in {"legacy", "tracks"}:
-            raise ValueError("algorithm must be legacy or tracks")
+        if self.algorithm not in {"tracks", "regions"}:
+            raise ValueError("algorithm must be tracks or regions; legacy and narrow were removed")
+        if self.auto_geometry_enabled and (self.algorithm not in {'tracks','regions'} or self.roi is not None):
+            raise ValueError('auto_geometry_enabled requires tracks/regions and automatic ROI (roi: null)')
+        if self.tracks_preprocessing_enabled and self.algorithm != 'tracks':
+            raise ValueError('tracks_preprocessing_enabled requires algorithm=tracks')
+        if self.tracks_gap_enhancement_enabled and not self.tracks_preprocessing_enabled:
+            raise ValueError('tracks_gap_enhancement_enabled requires tracks_preprocessing_enabled')
+        if not 0 < self.tracks_gap_kernel_width_ratio <= 1:
+            raise ValueError('tracks_gap_kernel_width_ratio must be in (0,1]')
+        if self.tracks_gap_kernel_height < 1:
+            raise ValueError('tracks_gap_kernel_height must be positive')
+        if not 0 <= self.tracks_gap_gain <= 2:
+            raise ValueError('tracks_gap_gain must be in [0,2]')
+        if self.tracks_horizontal_smoothing_sigma_x < 0 or self.tracks_horizontal_smoothing_sigma_y < 0:
+            raise ValueError('tracks horizontal smoothing sigmas must be nonnegative')
+        if not 0 < self.tracks_post_min_gap_ratio <= 1:
+            raise ValueError('tracks_post_min_gap_ratio must be in (0,1]')
+        if self.algorithm in {'regions'} and self.roi is not None:
+            raise ValueError('regions requires automatic ROI (roi: null); center crop is applied after geometry')
+        if self.region_structure not in {'auto','double_bright','single_bright'}:
+            raise ValueError('region_structure must be auto, double_bright or single_bright')
+        if self.region_signal_mode not in {'global','three_strip'}:
+            raise ValueError('region_signal_mode must be global or three_strip')
+        if self.narrow_width<16 or self.narrow_width>1024:
+            raise ValueError('narrow_width must be between 16 and 1024')
+        if self.geometry_target_spacing < 8 or self.geometry_target_spacing > 32:
+            raise ValueError('geometry_target_spacing must be between 8 and 32 pixels')
+        if self.compressed_layers_enabled and (not self.evidence_model or self.algorithm!='tracks'):
+            raise ValueError('compressed_layers_enabled requires the tracks evidence model')
+        if self.composite_layers_enabled and (not self.evidence_model or self.algorithm!='tracks'):
+            raise ValueError('composite_layers_enabled requires the tracks evidence model')
         if self.stack_roi_mode not in {"texture", "foreground_envelope"}:
             raise ValueError("stack_roi_mode must be texture or foreground_envelope")
         for name in ("foreground_roi_min_width_ratio", "foreground_roi_contrast_ratio"):
@@ -285,7 +369,7 @@ class CounterConfig:
             raise ValueError("Only shape-preserving piecewise_linear curves are supported")
         if not 0 < self.raw_mask_background_percentile < 50:
             raise ValueError("RAW background percentile must be in (0,50)")
-        for name in ("raw_mask_relative_floor", "raw_mask_min_active_ratio", "raw_mask_min_track_evidence_ratio",
+        for name in ("raw_mask_relative_floor", "raw_mask_min_track_evidence_ratio",
                      "margin_min_gradient_score", "margin_min_support_ratio", "sequence_short_gap_ratio",
                      "sequence_crossing_hard_reject_ratio", "regularity_regular_threshold",
                      "regularity_irregular_threshold", "regular_recovery_support_relaxation",
@@ -303,7 +387,7 @@ class CounterConfig:
         if sum(getattr(self, name) for name in ("regularity_spacing_weight", "regularity_acf_weight",
                                                  "regularity_track_weight", "regularity_geometry_weight")) <= 0:
             raise ValueError("Regularity weights must have positive sum")
-        if not 0 < self.regularity_acf_window_periods or not 0 < self.regular_gap_multiple_tolerance:
+        if not 0 < self.regularity_acf_window_periods:
             raise ValueError("Regularity windows and gap tolerance must be positive")
         for name in ("regularity_spacing_mad_scale", "regularity_gap_min_ratio", "regularity_gap_max_ratio",
                      "regularity_track_mad_scale", "regularity_geometry_mad_scale", "regularity_acf_min_ratio",
@@ -369,9 +453,16 @@ class CounterConfig:
             raise ValueError("identity_profile_samples must be an odd integer >= 9")
         if self.identity_template_min_tracks < 1 or self.identity_min_reject_evidence_families < 2:
             raise ValueError("Identity template/reject counts are invalid")
+        if self.endpoint_roi_band_ratio <= 0:
+            raise ValueError('endpoint_roi_band_ratio must be positive')
+        for name in ('endpoint_min_raw_body_support', 'endpoint_min_foreground_support',
+                     'endpoint_raw_contrast_ratio', 'endpoint_background_penalty',
+                     'endpoint_min_evidence_score'):
+            if not 0 <= getattr(self, name) <= 1:
+                raise ValueError(f'{name} must be in [0,1]')
         for name in ("identity_reference_min_support", "identity_reference_min_score",
                      "identity_insufficient_template_weight_scale", "identity_low_paper_support",
-                     "identity_low_positive_pair_score", "identity_low_template_similarity",
+                     "identity_low_positive_pair_score",
                      "identity_low_strip_consistency", "identity_low_negative_isolation",
                      "identity_close_competition_gap_ratio", "identity_pair_morphology_margin"):
             if not 0 <= getattr(self, name) <= 1:
@@ -386,6 +477,16 @@ class CounterConfig:
             raise ValueError("Unsupported strip_aggregation_mode")
         if self.strip_sequence_dual_enabled and not self.strip_sequence_enabled:
             raise ValueError("strip_sequence_dual_enabled requires strip_sequence_enabled")
+        if self.raw_polarity_consensus_enabled and not self.strip_sequence_enabled:
+            raise ValueError("raw_polarity_consensus_enabled requires strip_sequence_enabled")
+        if self.raw_final_observation_guard_enabled and not self.final_track_verifier_enabled:
+            raise ValueError("raw_final_observation_guard_enabled requires final_track_verifier_enabled")
+        if self.raw_final_observation_guard_enabled and self.final_track_verifier_shadow_mode:
+            raise ValueError("raw_final_observation_guard_enabled requires an active final verifier")
+        if self.oriented_association_enabled and not self.strip_sequence_enabled:
+            raise ValueError("oriented_association_enabled requires strip_sequence_enabled")
+        if self.shared_raw_body_dedup_enabled and not self.strip_sequence_enabled:
+            raise ValueError("shared_raw_body_dedup_enabled requires strip_sequence_enabled")
         if self.strip_sequence_mode not in {"augment", "replace", "shadow"}:
             raise ValueError("strip_sequence_mode must be augment, replace or shadow")
         for name in ("strip_sequence_min_weighted_support", "strip_sequence_single_pair_score",
@@ -447,7 +548,29 @@ class CounterConfig:
             data = yaml.safe_load(stream) or {}
         if not isinstance(data, dict):
             raise ValueError("Configuration must be a mapping")
-        unknown = set(data) - {f.name for f in fields(cls)}
+        profile = data.pop('profile', None)
+        if profile is not None:
+            if profile not in {'paper_layers_v4','e3_3'}:
+                raise ValueError(f'Unknown configuration profile: {profile}')
+            with (Path(__file__).parent / 'presets' / 'e3_3.yaml').open(encoding='utf-8') as stream:
+                defaults = yaml.safe_load(stream)
+            if profile=='paper_layers_v4':
+                defaults.update(evidence_model=True, oriented_association_enabled=True)
+            else:
+                defaults.update(evidence_model=False)
+            for group in ('input','signal','association','decision','display'):
+                values=data.pop(group,{})
+                if not isinstance(values,dict):
+                    raise ValueError(f'{group} must be a mapping')
+                for key,value in values.items():
+                    if key in data:
+                        raise ValueError(f'Duplicate configuration key: {key}')
+                    data[key]=value
+            defaults.update(data)
+            if data.get('final_track_verifier_enabled') is False and 'raw_final_observation_guard_enabled' not in data:
+                defaults['raw_final_observation_guard_enabled']=False
+            data=defaults
+        unknown = set(data) - {f.name for f in fields(cls)} - RETIRED_CONFIG_OPTIONS
         if unknown:
             raise ValueError(f"Unknown configuration keys: {sorted(unknown)}")
         return cls(**data)

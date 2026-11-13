@@ -1,8 +1,0 @@
-gradient_polarity: negative
-algorithm: tracks
-final_track_verifier_enabled: true
-final_track_verifier_shadow_mode: false
-multiscale_gradient_enabled: true
-gradient_scales: [0.0, 0.7, 1.4]
-multiscale_raw_support_ratio: 0.10
-multiscale_raw_support_radius: 2

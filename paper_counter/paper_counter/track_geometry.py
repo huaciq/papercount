@@ -89,6 +89,9 @@ def gap_profile(upper: PaperEdgeTrack, lower: PaperEdgeTrack, config: CounterCon
 
 def geometry_pair_score(upper: PaperEdgeTrack, lower: PaperEdgeTrack, local: LocalPeriod,
                         config: CounterConfig) -> dict:
+    signal_model=getattr(local,'signal_gap_model',None)
+    if signal_model is not None:
+        upper,lower=signal_model.geometry_tracks(upper,lower)
     scale = local.at((upper.center_y + lower.center_y) / 2)
     result = gap_profile(upper, lower, config, scale)
     values = np.array(result["gap_values"] or [result["center_gap"]])
@@ -112,6 +115,36 @@ def geometry_pair_score(upper: PaperEdgeTrack, lower: PaperEdgeTrack, local: Loc
         large_gap_anomaly=ratio > config.sequence_large_gap_anomaly_ratio,
         short_gap_warning=result["small_gap_ratio"] > 0,
         hard_reject=result["crossing_hard_reject"], hard_reject_reason="track_crossing" if result["crossing_hard_reject"] else None)
+    if signal_model is not None:
+        evidence=signal_model.pair_evidence(upper,lower)
+        result['signal_evidence']=evidence
+        state=evidence['state']
+        if state=='same_measured_body':
+            result.update(hard_reject=True,hard_reject_reason='same_measured_RAW_body')
+        elif state=='close_distinct_bodies':
+            # A measured separator can support genuinely thin neighboring
+            # sheets. A short distance alone is not proof of duplicate paper.
+            if evidence['raw_period_quality']<.3:
+                result['raw_separator_spacing_exemption']=result['short_gap_penalty']
+                result['pair_score']+=result['short_gap_penalty']
+                result['short_gap_penalty']=0.
+        elif state=='measured_background_break':
+            result['pair_score']+=result['long_gap_penalty']+result['spacing_prior_penalty']
+            result['long_gap_penalty']=result['spacing_prior_penalty']=0.
+        elif state in {'observed_bands_inside_gap','observed_transitions_inside_gap'}:
+            cost=config.sequence_unary_weight*min(config.max_sequence_gap_periods,evidence['available_missing_candidate_count'])
+            result['pair_score']-=cost
+            result['observed_missing_band_penalty']=cost
+        separated=any(p['separate_bodies'] for p in evidence['samples'])
+        if state not in {'same_measured_body','close_distinct_bodies'} and not separated:
+            # In a measured repeating region, several moderately close edges
+            # must not all pass simply because each gap is just above 0.55*T.
+            # The RAW quality modulates this extra density cost; no measured
+            # repeat means no extra periodic veto in irregular material.
+            cost=config.sequence_short_spacing_weight*evidence['raw_period_quality']*max(0.,
+                1-config.sequence_spacing_scale_ratio-evidence['gap_period_ratio'])
+            result['pair_score']-=cost
+            result['periodic_density_penalty']=cost
     return result
 
 

@@ -1,0 +1,11 @@
+# Select one repeat structure for the whole image, never per local peak.
+algorithm: regions
+auto_geometry_enabled: true
+geometry_target_spacing: 14.0
+narrow_width: 225
+region_structure: auto
+region_signal_mode: three_strip
+roi: null
+illumination_sigma: 15.0
+display_max_height: 4000
+display_max_width: 1600

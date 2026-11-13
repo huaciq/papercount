@@ -27,6 +27,18 @@ def unary_score(track: PaperEdgeTrack, config: CounterConfig) -> float:
     # Existing track scores are already normalized in [0, 1]. The small cost
     # discourages adding a candidate whose improvement is only numerical noise.
     reward = config.sequence_unary_weight * float(np.clip(track.total_score, 0, 1))
+    if config.evidence_model:
+        body=track.local_evidence.get('paper_body',{})
+        if body.get('verified'):
+            # 支持率描述可见范围；清晰局部纸身的存在奖励不被未观测条带稀释。
+            body_score=0.
+            # 只补偿因可见范围小而被支持率压低的轨迹；完整覆盖已经进入
+            # total_score，再按局部对比抬高一次会给纸内纹理重复奖励。
+            if track.support_ratio < config.min_track_support_ratio:
+                body_score=config.min_track_score
+            reward = max(reward,config.sequence_unary_weight*body_score)
+        # unknown 不压低原梯度证据；低覆盖最多补到普通候选门槛。
+        # 局部 SNR 不再兑换为独立纸张的高分，缺层/拥挤由 RAW 间隙证据裁决。
     if track.candidate_class == "marginal":
         # Even a marginal proposal with high coverage must not receive more
         # unary evidence than the weakest fully qualified strong candidate.
@@ -37,16 +49,27 @@ def unary_score(track: PaperEdgeTrack, config: CounterConfig) -> float:
 
 def transition_score(left: PaperEdgeTrack, right: PaperEdgeTrack, local: LocalPeriod,
                      config: CounterConfig, regularity=None) -> dict | None:
+    signal_model=getattr(local,'signal_gap_model',None)
+    if signal_model is not None:
+        left,right=signal_model.geometry_tracks(left,right)
     midpoint = (left.center_y + right.center_y) / 2
     period = local.at(midpoint)
     gap = right.center_y - left.center_y
     if not config.sequence_period_multiple_mode:
+        # 当前 YAML 走几何分支：比较共享条带上的真实间距、交叉和间距变化。
+        # 大间距是异常线索，不自动解释成“缺了 n 张”；规则度只调节软先验。
         geometry = geometry_pair_score(left, right, local, config)
         if gap <= 0 or geometry["hard_reject"]:
             return None
         # Continuous regularity adapts the large-gap and spacing prior.  The
         # default direct-call behavior retains the geometry-only objective.
         r = float(np.clip(regularity.at(midpoint), 0, 1)) if regularity is not None else 0.0
+        if r>=config.regularity_regular_threshold and geometry.get('raw_separator_spacing_exemption'):
+            # Regular geometry and an uncertain local intensity split can be
+            # paper-internal texture. Keep this as a soft spacing competition,
+            # not a hard rejection of two genuinely separate thin sheets.
+            cost=geometry.pop('raw_separator_spacing_exemption')
+            geometry['pair_score']-=cost;geometry['short_gap_penalty']=cost
         base_long = geometry["long_gap_penalty"]
         base_prior = geometry["spacing_prior_penalty"]
         ratio = max(geometry["gap_median"], config.epsilon) / max(period, config.epsilon)
@@ -59,6 +82,10 @@ def transition_score(left: PaperEdgeTrack, right: PaperEdgeTrack, local: LocalPe
         geometry["long_gap_penalty"] = adaptive_long
         geometry["spacing_prior_penalty"] = adaptive_prior
         geometry["pair_score"] += (base_long - adaptive_long) + (base_prior - adaptive_prior)
+        # RAW 黑色间隔已经豁免间距惩罚，不能在适应性先验中再次加回来。
+        if geometry.get('signal_evidence',{}).get('state')=='measured_background_break':
+            geometry['pair_score']+=adaptive_long+adaptive_prior
+            geometry['long_gap_penalty']=geometry['spacing_prior_penalty']=0.
         return {**geometry, "from_track_id": left.track_id, "to_track_id": right.track_id,
             "from_y": left.center_y, "to_y": right.center_y, "gap": geometry["gap_median"],
             "local_period": period, "period_multiple": 1, "period_multiple_interpretation": "disabled",
@@ -104,7 +131,7 @@ class SequenceResult:
 
 
 def optimize_vertical_sequence(tracks: list[PaperEdgeTrack], local: LocalPeriod,
-                               config: CounterConfig, regularity=None) -> SequenceResult:
+                               config: CounterConfig, regularity=None, require_endpoints=False) -> SequenceResult:
     """Maximize sum(unary) + sum(pair) + optional spacing-change costs.
 
     Each component is anchored by at least one strong candidate. Starts/ends
@@ -112,6 +139,13 @@ def optimize_vertical_sequence(tracks: list[PaperEdgeTrack], local: LocalPeriod,
     Components separated by more than the bounded transition range are solved
     independently and recorded without a fabricated transition across the break.
     """
+    originals=None
+    signal_model=getattr(local,'signal_gap_model',None)
+    if signal_model is not None:
+        for i,t in enumerate(tracks):
+            if not t.track_id:t.track_id=f'candidate_{i:05d}'
+        originals={t.track_id:t for t in tracks}
+        tracks=[signal_model.canonical_track(t) for t in tracks]
     ordered = sorted((t for t in tracks if t.candidate_class in {"strong", "marginal"}),
                      key=lambda t: (t.center_y, t.track_id))
     for i, track in enumerate(ordered):
@@ -126,6 +160,7 @@ def optimize_vertical_sequence(tracks: list[PaperEdgeTrack], local: LocalPeriod,
           t.total_score < config.margin_min_track_score))]
     forbidden_ids = {t.track_id for t in forbidden}
     ordered = [t for t in ordered if t.track_id not in forbidden_ids]
+    if signal_model is not None:signal_model.set_candidates(ordered)
     result = SequenceResult()
     components: list[list[PaperEdgeTrack]] = []
     for track in ordered:
@@ -140,7 +175,7 @@ def optimize_vertical_sequence(tracks: list[PaperEdgeTrack], local: LocalPeriod,
         for j, track in enumerate(component):
             reward = unary_score(track, config)
             strong = track.candidate_class == "strong"
-            current = {(-1, strong): (reward, (j,))}
+            current = {(-1, strong): (reward, (j,))} if not require_endpoints or j==0 else {}
             for i in range(j - 1, -1, -1):
                 edge = transition_score(component[i], track, local, config, regularity)
                 if edge is None:
@@ -148,6 +183,36 @@ def optimize_vertical_sequence(tracks: list[PaperEdgeTrack], local: LocalPeriod,
                         result.rejected_transitions.append(geometry_pair_score(component[i], track, local, config))
                     continue
                 edges[i, j] = edge
+                if regularity is not None and not config.sequence_spacing_change_weight and config.evidence_model:
+                    # Evaluate all predecessor histories in a vectorized batch.
+                    # This is the same three-track objective, without a Python
+                    # function call for every O(N^3) predecessor combination.
+                    entries=list(states[i].items())
+                    previous=np.array([key[0] for key,value in entries],int)
+                    anchored=np.array([key[1] for key,value in entries],bool)
+                    scores=np.array([value[0] for key,value in entries])
+                    spacing=max(float(local.at(component[i].center_y)),config.epsilon)
+                    r=float(regularity.at(component[i].center_y))
+                    ys=np.array([component[max(0,p)].center_y for p in previous])
+                    ab=np.abs(component[i].center_y-ys)
+                    bc=abs(track.center_y-component[i].center_y)
+                    ac=np.abs(track.center_y-ys)
+                    short=np.maximum(0,1-ab/(config.sequence_short_gap_ratio*spacing))
+                    short+=max(0,1-bc/(config.sequence_short_gap_ratio*spacing))
+                    costs=np.maximum(0,.45*short*np.exp(-np.abs(ac-spacing)/max(spacing,1))*(.55+.45*r)
+                                     +.25*np.exp(-np.abs(ab+bc-ac)/max(spacing,1))*r
+                                     -.30*np.clip(component[i].total_score,0,1))
+                    costs[previous<0]=0
+                    values=scores+reward+edge['pair_score']-costs
+                    for anchor in (False,True):
+                        indices=np.flatnonzero(anchored==anchor)
+                        if not len(indices):continue
+                        best=int(indices[np.argmax(values[indices])])
+                        key=(i,bool(anchor or strong))
+                        value=float(values[best])
+                        if key not in current or value>current[key][0]:
+                            current[key]=(value,entries[best][1][1]+(j,))
+                    continue
                 for (previous, anchored), (score, path) in states[i].items():
                     change = 0.0
                     if previous >= 0 and config.sequence_spacing_change_weight:
@@ -171,11 +236,17 @@ def optimize_vertical_sequence(tracks: list[PaperEdgeTrack], local: LocalPeriod,
                         competition = None
                         competition_cost = 0.0
                     value = score + reward + edge["pair_score"] - competition_cost + change
-                    key = (i if config.sequence_spacing_change_weight else 0, anchored or strong)
+                    # Both three-track competition and spacing-change depend
+                    # on the actual predecessor; do not merge those histories.
+                    # E3.3 保留历史近似状态用于结果重现。新纸身模型保留真实
+                    # 前驱，才能正确求解三节点竞争；兼容入口不静默改变旧计数。
+                    key = (i if config.sequence_spacing_change_weight or
+                           (regularity is not None and config.evidence_model) else 0, anchored or strong)
                     if key not in current or value > current[key][0]:
                         current[key] = (value, path + (j,))
             states.append(current)
-        anchored_paths = [entry for state in states for (_, anchor), entry in state.items() if anchor]
+        final_states=states[-1:] if require_endpoints else states
+        anchored_paths = [entry for state in final_states for (_, anchor), entry in state.items() if anchor]
         if not anchored_paths:
             continue
         score, path = max(anchored_paths, key=lambda entry: entry[0])
@@ -207,6 +278,9 @@ def optimize_vertical_sequence(tracks: list[PaperEdgeTrack], local: LocalPeriod,
     # slightly below the global path margin; short competing textures do not
     # satisfy these two geometry checks.
     for candidate in ordered:
+        if signal_model is not None:
+            # No post-DP insertion may bypass RAW identity/spacing competition.
+            continue
         if candidate.track_id in selected_ids or candidate.candidate_class != "marginal":
             continue
         left = next((t for t in reversed(result.selected) if t.center_y < candidate.center_y), None)
@@ -232,7 +306,6 @@ def optimize_vertical_sequence(tracks: list[PaperEdgeTrack], local: LocalPeriod,
                 and (not irregular_guard or candidate.total_score >= config.min_track_score)):
             candidate.sequence_decision = "rescued"
             candidate.reason = "sequence_rescued_geometry"
-            result.rescued.append(candidate)
             result.selected.append(candidate)
             selected_ids.add(candidate.track_id)
     result.selected.sort(key=lambda t: t.center_y)
@@ -284,4 +357,10 @@ def optimize_vertical_sequence(tracks: list[PaperEdgeTrack], local: LocalPeriod,
         result.decisions.append({"track_id": track.track_id, "center_y": track.center_y,
             "unary_score": unary_score(track, config), "candidate_class": track.candidate_class,
             "decision": "suppressed", "reason": track.reason, "raw_mask_state": track.raw_mask_state})
+    if originals is not None:
+        for t in ordered+forbidden:
+            old=originals[t.track_id]
+            old.sequence_decision=t.sequence_decision;old.reason=t.reason
+        for name in ('selected','suppressed','rescued'):
+            setattr(result,name,[originals[t.track_id] for t in getattr(result,name)])
     return result

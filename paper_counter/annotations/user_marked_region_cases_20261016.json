@@ -1,0 +1,153 @@
+[
+  {
+    "image": "测试集/260921-7号纸/Pic_2026_09_21_113628_4-7号纸2-2.bmp",
+    "old_box_numbers": [
+      30,
+      31
+    ],
+    "old_span": [
+      1015.0,
+      1085.0
+    ],
+    "new_boxes": [
+      {
+        "number": 30,
+        "y": [
+          1036.1010168002329,
+          1069.531087607752
+        ],
+        "height": 33.43007080751909
+      }
+    ],
+    "before": 84,
+    "after": 83,
+    "truth": 83,
+    "review": "113628.png",
+    "reference_audit": "three_strip_all_audit_20261016_094138",
+    "mapping_basis": "latest_prior_run_box_numbers_and_visual_review",
+    "used_by_algorithm": false
+  },
+  {
+    "image": "测试集/260921-7号纸/Pic_2026_09_21_113642_5-7号纸3-1.bmp",
+    "old_box_numbers": [
+      81
+    ],
+    "old_span": [
+      2842.0,
+      2901.0
+    ],
+    "new_boxes": [
+      {
+        "number": 81,
+        "y": [
+          2845.367112587943,
+          2872.2171799632783
+        ],
+        "height": 26.85006737533513
+      },
+      {
+        "number": 82,
+        "y": [
+          2878.6957996663696,
+          2910.941202804497
+        ],
+        "height": 32.245403138127585
+      }
+    ],
+    "before": 82,
+    "after": 83,
+    "truth": 83,
+    "review": "113642.png",
+    "reference_audit": "three_strip_all_audit_20261016_094138",
+    "mapping_basis": "latest_prior_run_box_numbers_and_visual_review",
+    "used_by_algorithm": false
+  },
+  {
+    "image": "测试集/260921-7号纸/Pic_2026_09_21_113647_6-7号纸3-2.bmp",
+    "old_box_numbers": [
+      1
+    ],
+    "old_span": [
+      21.0,
+      77.0
+    ],
+    "new_boxes": [
+      {
+        "number": 1,
+        "y": [
+          25.178807255644003,
+          44.0
+        ],
+        "height": 18.821192744355997
+      },
+      {
+        "number": 2,
+        "y": [
+          44.0,
+          78.0
+        ],
+        "height": 34.0
+      }
+    ],
+    "before": 82,
+    "after": 83,
+    "truth": 83,
+    "review": "113647.png",
+    "reference_audit": "three_strip_all_audit_20261016_094138",
+    "mapping_basis": "latest_prior_run_box_numbers_and_visual_review",
+    "used_by_algorithm": false
+  },
+  {
+    "image": "测试集/260921-9号纸/Pic_2026_09_21_111722_6-9号纸4-2.bmp",
+    "old_box_numbers": [],
+    "old_span": [
+      16,
+      49
+    ],
+    "new_boxes": [
+      {
+        "number": 1,
+        "y": [
+          20.259953432211265,
+          46.0
+        ],
+        "height": 25.740046567788735
+      }
+    ],
+    "before": 99,
+    "after": 100,
+    "truth": 100,
+    "review": "111722.png",
+    "reference_audit": "three_strip_all_audit_20261016_094138",
+    "mapping_basis": "latest_prior_run_box_numbers_and_visual_review",
+    "used_by_algorithm": false
+  },
+  {
+    "image": "测试集/260921-白底白板2号纸/Pic_2026_09_21_133706_2-白底白板1-2.bmp",
+    "old_box_numbers": [
+      46,
+      47
+    ],
+    "old_span": [
+      1566.0,
+      1618.0
+    ],
+    "new_boxes": [
+      {
+        "number": 46,
+        "y": [
+          1566.0,
+          1600.9376268915264
+        ],
+        "height": 34.937626891526406
+      }
+    ],
+    "before": 52,
+    "after": 51,
+    "truth": 51,
+    "review": "133706.png",
+    "reference_audit": "three_strip_all_audit_20261016_094138",
+    "mapping_basis": "latest_prior_run_box_numbers_and_visual_review",
+    "used_by_algorithm": false
+  }
+]

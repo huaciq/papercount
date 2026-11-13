@@ -37,10 +37,13 @@ def process_dual(image, config):
     """
     if config.algorithm != "tracks":
         raise ValueError("Dual polarity audit requires the tracks algorithm")
-    negative = process_tracks(image, replace(config, gradient_polarity="negative"))
-    positive = process_tracks(image, replace(config, gradient_polarity="positive",
-                              final_track_verifier_enabled=False, positive_aux_weight=0.0,
-                              recovery_require_negative_evidence=False))
+    from .counter import PaperCounter
+    negative = PaperCounter(replace(config, gradient_polarity="negative")).process(image)
+    positive = PaperCounter(replace(config, gradient_polarity="positive",
+                              final_track_verifier_enabled=False,
+                              # RAW 终判检查依赖身份终判，审计分支须一起关闭。
+                              raw_final_observation_guard_enabled=False, positive_aux_weight=0.0,
+                              recovery_require_negative_evidence=False)).process(image)
     before_ids = set(negative.debug_info["pre_verifier_sequence"]["track_ids"])
     candidates = negative.paper_edge_tracks + negative.rejected_tracks
     before = {t.track_id: t.center_y for t in candidates if t.track_id in before_ids}

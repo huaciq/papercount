@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hash-bound count, sheet-track and background-region ground truth v1",
+  "type": "object",
+  "required": ["schema_version", "coordinate_space", "images"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "coordinate_space": {"const": "detection_image"},
+    "description": {"type": "string"},
+    "images": {"type": "object", "additionalProperties": {"$ref": "#/$defs/image"}}
+  },
+  "$defs": {
+    "status": {"enum": ["verified", "pending"]},
+    "point": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}], "minItems": 2, "maxItems": 2},
+    "box": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4},
+    "boundary": {
+      "type": "object", "required": ["polarity", "points"],
+      "properties": {"polarity": {"enum": ["positive", "negative"]},
+        "points": {"type": "array", "items": {"$ref": "#/$defs/point"}, "minItems": 2}}
+    },
+    "track": {
+      "type": "object", "required": ["id", "status", "endpoint"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1}, "status": {"$ref": "#/$defs/status"},
+        "source": {"type": "string"}, "endpoint": {"enum": ["top", "bottom", "internal"]},
+        "tolerance_px": {"type": "number", "exclusiveMinimum": 0},
+        "min_shared_observations": {"type": "integer", "minimum": 2},
+        "min_span_fraction": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "boundaries": {"type": "array", "items": {"$ref": "#/$defs/boundary"}}
+      },
+      "allOf": [{"if": {"properties": {"status": {"const": "verified"}}},
+        "then": {"required": ["source", "boundaries"], "properties": {"boundaries": {"minItems": 1}, "source": {"minLength": 1}}}}]
+    },
+    "region": {
+      "type": "object", "required": ["id", "status"],
+      "properties": {"id": {"type": "string", "minLength": 1}, "status": {"$ref": "#/$defs/status"},
+        "source": {"type": "string"}, "bbox": {"$ref": "#/$defs/box"},
+        "min_observation_fraction": {"type": "number", "exclusiveMinimum": 0, "maximum": 1}},
+      "allOf": [{"if": {"properties": {"status": {"const": "verified"}}},
+        "then": {"required": ["bbox", "source"], "properties": {"source": {"minLength": 1}}}}]
+    },
+    "image": {
+      "type": "object", "required": ["image_sha256", "rotation_ccw_degrees", "track_annotation_status", "track_completeness", "tracks", "background_regions"],
+      "properties": {
+        "image_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "rotation_ccw_degrees": {"enum": [0, 90]},
+        "track_annotation_status": {"$ref": "#/$defs/status"}, "track_completeness": {"enum": ["partial", "complete"]},
+        "count": {"oneOf": [{"type": "null"}, {"type": "object", "required": ["value", "status", "source"],
+          "properties": {"value": {"type": "integer", "minimum": 0}, "status": {"$ref": "#/$defs/status"}, "source": {"type": "string", "minLength": 1}}}]},
+        "tracks": {"type": "array", "items": {"$ref": "#/$defs/track"}},
+        "background_regions": {"type": "array", "items": {"$ref": "#/$defs/region"}},
+        "ignore_regions": {"type": "array", "items": {"$ref": "#/$defs/region"}}
+      }
+    }
+  }
+}

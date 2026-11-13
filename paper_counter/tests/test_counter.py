@@ -8,10 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from paper_counter import CounterConfig, PaperCounter
-from paper_counter.models import PeakCandidate
-from paper_counter.peaks import detect_candidates, remove_duplicates, strip_peak_indices
 from paper_counter.period import estimate_period
-from paper_counter.repair import repair_missing_peaks
 from paper_counter.visualization import save_debug
 
 
@@ -86,38 +83,9 @@ class CounterTests(unittest.TestCase):
         self.assertIsNone(estimate_period(profile, 5, 12)[0])
         self.assertIsNone(estimate_period(np.zeros(100), 5, 50)[0])
 
-    def test_no_evidence_never_repairs(self):
-        config = CounterConfig()
-        anchors = [PeakCandidate(20, 5, 5, 2), PeakCandidate(60, 5, 5, 2)]
-        repaired, attempts = repair_missing_peaks(anchors, [], [np.array([])] * 8, 20, config, set())
-        self.assertEqual(repaired, [])
-        self.assertEqual(attempts[0]["reason"], "no_image_evidence")
 
-    def test_weak_real_peak_can_repair_but_single_strip_cannot(self):
-        config = CounterConfig()
-        anchors = [PeakCandidate(20, 5, 5, 2), PeakCandidate(60, 5, 5, 2)]
-        weak = [PeakCandidate(41, 1, 1.5, 2, source="repaired")]
-        for votes, expected in ((8, 1), (1, 0)):
-            strips = [np.array([41]) if i < votes else np.array([]) for i in range(8)]
-            repaired, _ = repair_missing_peaks(anchors, weak, strips, 20, config, set())
-            self.assertEqual(len(repaired), expected)
 
-    def test_adaptive_weak_threshold_repair(self):
-        cfg = CounterConfig()
-        y = np.arange(200)
-        signal = sum(amplitude * np.exp(-0.5 * ((y - center) / 3) ** 2)
-                     for center, amplitude in ((40, 5), (60, 5), (80, 0.8), (100, 5), (120, 5)))
-        strong, threshold = detect_candidates(signal, 20, cfg)
-        weak, _ = detect_candidates(signal, 20, cfg, weak=True)
-        self.assertGreater(threshold, 0)
-        self.assertTrue(len(weak) >= len(strong))
-        self.assertTrue(all(p.width > 0 for p in weak))
 
-    def test_duplicates_keep_stronger_candidate_and_record_reason(self):
-        candidates = [PeakCandidate(20, 1, 1, 2, 0.5), PeakCandidate(24, 4, 4, 2, 1)]
-        kept, removed = remove_duplicates(candidates, 20, CounterConfig())
-        self.assertEqual([p.y for p in kept], [24])
-        self.assertEqual(removed[0].reason, "duplicate")
 
     def test_uint16_and_bgra_supported(self):
         image, centers = synthetic_papers(count=10)

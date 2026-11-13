@@ -1,0 +1,3 @@
+# 稳定默认：新模型仍有全量退步；使用 paper_layers_v4.yaml 显式试验。
+# 历史有效参数保存在包内 presets/e3_3.yaml，旧平铺配置仍可读取。
+profile: e3_3

@@ -40,9 +40,20 @@ def save_overlay(result: PaperCountResult, directory: Path, config: CounterConfi
         canvas = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
     elif canvas.shape[2] == 4:
         canvas = cv2.cvtColor(canvas, cv2.COLOR_BGRA2BGR)
+    plain = canvas.copy() if result.debug_info.get('algorithm')=='narrow_regions' else None
     offset = result.debug_info["roi"]["y1"]
     scale_y = canvas.shape[0] / roi.shape[0]
-    if result.debug_info.get("algorithm") == "multi_strip_tracks":
+    if result.debug_info.get('algorithm')=='narrow_regions':
+        scale_x=canvas.shape[1]/roi.shape[1]
+        for box in result.region_boxes:
+            x1,y1,x2,y2=box['detection_xyxy']
+            color=(0,255,0) if box['number']%2 else (255,200,0)
+            if box.get('thickness_inferred'):color=(0,180,255)
+            a=(int(round(x1*scale_x)),max(0,int(round(y1*scale_y))))
+            b=(min(canvas.shape[1]-1,int(round(x2*scale_x))-1),min(canvas.shape[0]-1,int(round(y2*scale_y))-1))
+            cv2.rectangle(canvas,a,b,color,1)
+            cv2.putText(canvas,str(box['number']),(3,min(canvas.shape[0]-2,a[1]+10)),cv2.FONT_HERSHEY_SIMPLEX,.3,color,1)
+    elif result.debug_info.get("algorithm") == "multi_strip_tracks":
         strips = result.debug_info["strip_bounds_roi_x"]
         scale_x = canvas.shape[1] / roi.shape[1]
         red_tracks = ([t for t in result.rejected_tracks if t.sequence_decision == "suppressed"]
@@ -72,10 +83,12 @@ def save_overlay(result: PaperCountResult, directory: Path, config: CounterConfi
                         cv2.line(canvas, (0, y), (min(12, canvas.shape[1] - 1), y), color, 2)
                         cv2.line(canvas, (max(0, canvas.shape[1] - 13), y), (canvas.shape[1] - 1, y), color, 2)
     else:
-        _draw_legacy_lines(canvas, result, offset, scale_y)
+        raise ValueError('Only tracks and regions results can be rendered')
     # Put metadata outside the image, so narrow line-scan input stays legible.
     title_height = 116
-    header = np.full((title_height, max(760, canvas.shape[1]), 3), 28, dtype=np.uint8)
+    narrow=result.debug_info.get('algorithm')=='narrow_regions'
+    compare_width=2*canvas.shape[1] if plain is not None else canvas.shape[1]
+    header = np.full((title_height, max(225,compare_width) if narrow else max(760, canvas.shape[1]), 3), 28, dtype=np.uint8)
     period = f"{result.period:.2f}px" if result.period is not None else "unavailable"
     local = result.debug_info.get("median_local_period")
     local_label = f"{local:.2f}px" if local is not None else "unavailable"
@@ -83,30 +96,38 @@ def save_overlay(result: PaperCountResult, directory: Path, config: CounterConfi
              f"Gradient polarity: {result.gradient_polarity}  Confidence: {result.confidence:.3f}",
              "Green: selected | Yellow: rescued | Red: sequence suppressed" if config.vertical_sequence_enabled else "Green: detected | Yellow: recovered | Red: rejected",
              "Y: detection image | Edge ticks: cyan CORE, orange MARGIN"]
+    if result.debug_info.get('algorithm')=='narrow_regions':
+        lines=[f'Complete units: {result.count} | {roi.shape[1]}px',
+               f"Unit: {result.debug_info['region_detection']['structure']}",
+               'Left: boxes | Right: mirrored original', 'Orange: thickness inferred']
     for i, line in enumerate(lines):
-        cv2.putText(header, line, (10, 23 + i * 27), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (235, 235, 235), 1, cv2.LINE_AA)
+        cv2.putText(header, line, (10, 23 + i * 27), cv2.FONT_HERSHEY_SIMPLEX, 0.36 if narrow else 0.48, (235, 235, 235), 1, cv2.LINE_AA)
     body = np.full((canvas.shape[0], header.shape[1], 3), 28, dtype=np.uint8)
     body[:, :canvas.shape[1]] = canvas
+    if plain is not None:
+        # Reflect only the comparison panel: adjacent edges show the same
+        # source columns, while detection coordinates and vertical alignment stay intact.
+        body[:,canvas.shape[1]:2*canvas.shape[1]]=plain[:,::-1]
     overlay = np.vstack((header, body))
     write_png(directory / "result_overlay.png", overlay)
-    return build_render_metadata(result.debug_info, canvas.shape[1], canvas.shape[0],
-                                 overlay.shape[1], overlay.shape[0], title_height)
-
-
-def _draw_legacy_lines(canvas: np.ndarray, result: PaperCountResult, offset: int, scale_y: float) -> None:
-    """Retain horizontal-line rendering for explicit legacy runs."""
-    for peaks, color in ((result.rejected_peaks, (0, 0, 255)),
-                         (result.detected_peaks, (0, 255, 0)), (result.repaired_peaks, (0, 255, 255))):
-        for peak in peaks:
-            y = min(canvas.shape[0] - 1, int((peak.y - offset) * scale_y))
-            cv2.line(canvas, (0, y), (canvas.shape[1] - 1, y), color, 1)
+    metadata=build_render_metadata(result.debug_info, canvas.shape[1], canvas.shape[0],
+                                  overlay.shape[1], overlay.shape[0], title_height)
+    if plain is not None:
+        metadata['comparison_panel']=dict(offset_x=canvas.shape[1],offset_y=title_height,
+            width=canvas.shape[1],height=canvas.shape[0],horizontal_mirror=True,gap_px=0)
+    return metadata
 
 
 def save_debug(result: PaperCountResult, output: str | Path, config: CounterConfig) -> None:
+    if result.debug_info.get('algorithm')=='narrow_regions':
+        from .region_output import save_regions
+        return save_regions(result,output,config,full=True)
     """Save plots, stage previews, complete candidate records and numeric profiles."""
     directory = Path(output)
     directory.mkdir(parents=True, exist_ok=True)
     render_metadata = save_overlay(result, directory, config)
+    from .detection_coordinates import export_detection_coordinates
+    coordinates=export_detection_coordinates(result,directory,render_metadata)
     result.debug_info["render_metadata"] = render_metadata
     with (directory / "render_metadata.json").open("w", encoding="utf-8") as stream:
         json.dump(render_metadata, stream, ensure_ascii=False, indent=2, allow_nan=False)
@@ -132,6 +153,22 @@ def save_debug(result: PaperCountResult, output: str | Path, config: CounterConf
     ax.legend()
     ax.grid(alpha=0.2)
     fig.savefig(directory / "profile.png", dpi=160)
+    # 编号点是轨迹中心在全局曲线上的投影，并非该曲线的寻峰结果。
+    numbered,number_ax=plt.subplots(figsize=(17,6),constrained_layout=True)
+    number_ax.plot(y,profile,lw=.8,color='steelblue',label='Global median response')
+    for track in coordinates['tracks']:
+        value=track['primary_global_response']
+        if value is None:continue
+        center=track['center_detection_y'];number=track['number']
+        color='goldenrod' if track['source']=='recovered' or track['decision']=='rescued' else 'green'
+        number_ax.scatter([center],[value],c=color,s=18)
+        number_ax.annotate(str(number),(center,value),xytext=(0,8 if number%2 else -14),
+            textcoords='offset points',ha='center',fontsize=6)
+    number_ax.set(xlabel='Detection image Y (px)',ylabel='Normalized gradient response',
+        title='Numbered final track centers projected onto global response (NOT global peak detections)')
+    number_ax.grid(alpha=.2);number_ax.legend()
+    numbered.savefig(directory/'profile_numbered.png',dpi=160)
+    plt.close(numbered)
     plt.close(fig)
     fig, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
     for polarity, d in data.items():
@@ -210,6 +247,10 @@ def save_debug(result: PaperCountResult, output: str | Path, config: CounterConf
             arrays['strip_original_intensity_8bit'] = result.artifacts['strip_raw_intensity_profiles']
             for polarity, gradient in result.artifacts['strip_raw_gradient_profiles'].items():
                 arrays[polarity+'_unnormalized_original_gradient'] = gradient
+    composite=result.artifacts.get('composite_model')
+    if composite is not None:
+        composite.plot_evidence(result.paper_edge_tracks,directory)
+        arrays['composite_raw_views']=composite.views
     np.savez_compressed(directory / "profiles.npz", **arrays)
     with (directory / "debug_info.json").open("w", encoding="utf-8") as stream:
         json.dump(result.debug_info, stream, ensure_ascii=False, indent=2, allow_nan=False)

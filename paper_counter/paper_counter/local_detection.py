@@ -28,6 +28,8 @@ def local_statistics(profile: np.ndarray, period: float, config: CounterConfig) 
         baseline[start:start + len(block)] = med
         mad[start:start + len(block)] = np.median(np.abs(block - med[:, None]), axis=1)
     _, scale, _ = robust_scale(signal, config.epsilon)
+    # MAD(y)=median(|window-median(window)|)，默认以 2.0/0.8 倍区分强弱峰。
+    # 稀疏窗口可能 MAD=0，故用整条带尺度的一个比例托底，避免零阈值收噪声。
     effective = np.maximum(mad, max(scale * config.mad_floor_ratio, config.epsilon))
     return {"baseline": baseline, "mad": mad, "effective_mad": effective,
             "strong_threshold": effective * config.strong_prominence_k,
@@ -48,6 +50,7 @@ def detect_strip_peaks(profiles: np.ndarray, period: float, config: CounterConfi
         stats = local_statistics(profile, period, config)
         statistics.append(stats)
         extended = np.r_[stats["baseline"][0], profile, stats["baseline"][-1]]
+        # prominence 衡量峰相对周围基底的突出程度，并不等于峰的绝对高度。
         ys, properties = find_peaks(extended, prominence=(None, None), width=(None, None))
         candidates = []
         for i, padded_y in enumerate(ys):

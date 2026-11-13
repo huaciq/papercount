@@ -1,6 +1,7 @@
 """Offline single-image paper counting CLI."""
 
 import argparse
+import hashlib
 import sys
 from pathlib import Path
 import numpy as np
@@ -8,24 +9,28 @@ import numpy as np
 from paper_counter import CounterConfig, PaperCounter
 from paper_counter.preprocessing import read_image
 from paper_counter.visualization import save_debug
+from paper_counter.compact_output import save_compact
 from paper_counter.ground_truth import load_ground_truth, evaluate_result
 
 
 def main() -> int:
     """Load one image, run the counter and save all diagnostics."""
-    parser = argparse.ArgumentParser(description="Traditional paper-edge counting at native image resolution")
+    parser = argparse.ArgumentParser(description="Paper counting: tracks or regions, selected by --config")
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=Path(__file__).parent / "configs" / "default.yaml")
-    parser.add_argument("--output", type=Path, default=Path("output"))
+    parser.add_argument("--output", type=Path, default=Path(__file__).parent / "output" / "current")
+    parser.add_argument("--full-debug", action="store_true", help="Export all stage diagnostics; default exports only final overlay and compact JSON")
     parser.add_argument("--rotate-ccw", action="store_true", help="Rotate input counter-clockwise 90 degrees before detection")
     parser.add_argument("--dual-polarity", action="store_true", help="Also audit independent positive tracks; keep negative final count")
     parser.add_argument("--ground-truth", type=Path, default=None, help="Optional ground_truth.json for count/edge metrics")
     args = parser.parse_args()
     try:
+        # CLI 使用完整 YAML 参数；CounterConfig() 的基础默认值并不等于当前生产方案。
         config = CounterConfig.from_yaml(args.config)
         image = read_image(args.image)
         original_shape = list(image.shape)
         if args.rotate_ccw:
+            # 后续算法统一假设纸层沿 y 排列；返回坐标属于旋转后的检测图。
             image = np.rot90(image, 1).copy()
         positive_result = None
         if args.dual_polarity:
@@ -36,24 +41,32 @@ def main() -> int:
         else:
             result = PaperCounter(config).process(image)
         result.debug_info["input_image"] = str(args.image.resolve())
+        result.debug_info["input_image_sha256"] = hashlib.sha256(args.image.read_bytes()).hexdigest()
         result.debug_info["input_original_shape"] = original_shape
         result.debug_info["rotation_ccw_degrees"] = 90 if args.rotate_ccw else 0
-        result.debug_info["coordinate_system"] = "detection image after requested rotation; x2/y2 exclusive"
-        if args.rotate_ccw:
+        result.debug_info["coordinate_system"] = "detection image after requested rotation and optional geometry preprocessing; x2/y2 exclusive"
+        if args.rotate_ccw and not result.debug_info.get('geometry_preprocessing'):
             result.debug_info["coordinate_mapping_to_original"] = {
                 "original_x": "original_width - 1 - detection_y", "original_y": "detection_x"}
+        if result.debug_info.get('geometry_preprocessing'):
+            result.debug_info['coordinate_mapping_to_original'] = {
+                'steps': ['apply geometry_preprocessing.detection_to_input affine',
+                          'undo requested 90 degree rotation if enabled'],
+                'rotation_ccw_degrees':90 if args.rotate_ccw else 0}
         if args.ground_truth:
             result.debug_info["ground_truth"] = evaluate_result(
                 result, load_ground_truth(args.ground_truth), args.image.name)
-        save_debug(result, args.output, config)
+        exporter = save_debug if args.full_debug else save_compact
+        exporter(result, args.output, config)
         if positive_result is not None:
             from dataclasses import replace
             positive_result.debug_info.update(input_image=str(args.image.resolve()),
                 input_original_shape=original_shape,
                 rotation_ccw_degrees=90 if args.rotate_ccw else 0)
-            save_debug(positive_result, args.output / "positive",
+            exporter(positive_result, args.output / "positive",
                        replace(config, gradient_polarity="positive",
                                final_track_verifier_enabled=False,
+                               raw_final_observation_guard_enabled=False,
                                positive_aux_weight=0.0, recovery_require_negative_evidence=False))
     except (ValueError, OSError, TypeError) as error:
         print(f"Error: {error}", file=sys.stderr)
@@ -70,6 +83,12 @@ def main() -> int:
              "Output": str(args.output.resolve())}
     for name, value in items.items():
         print(f"{name}: {value}")
+    if debug.get('count_breakdown'):
+        parts=debug['count_breakdown']
+        print(f"纸身证据已确认: {parts['confirmed']}；纸身证据待确认: {parts['uncertain']}；估计总数: {parts['estimated_total']}")
+    if debug.get('compressed_layers',{}).get('counts'):
+        weak=debug['compressed_layers']['counts']
+        print(f"压实弱层纹：找到 {weak['found']} 条候选，送入终判 {weak['sent_to_terminal']} 条，最终保留 {weak['retained']} 条；局部重评已有轨迹 {weak['existing_rechecked']} 条")
     if debug.get("algorithm") == "multi_strip_tracks":
         for label, key in (("Active stack ROI", "active_stack_roi"), ("Initial global period", "initial_global_period"),
                            ("Median local period", "median_local_period"), ("Strong strip candidate count", "strong_strip_candidate_count"),

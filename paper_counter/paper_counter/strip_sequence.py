@@ -141,6 +141,7 @@ def decode_strip_sequences(data: dict, raw_intensity: np.ndarray, raw_gradient: 
                 if contrast < cfg.strip_sequence_raw_min_contrast or mask.state_at(raw_y+offset) == StackState.INVALID:
                     rejected_raw += 1
                     continue
+                # 多尺度在同一 RAW 峰附近的响应合并为一次观测，不能当成多张纸。
                 close = next((o for o in merged if abs(o.peak.y-(raw_y+offset)) <= radius), None)
                 if close is not None:
                     close.sources = sorted(set(close.sources+[float(scale)]))
@@ -196,6 +197,7 @@ def decode_strip_sequences(data: dict, raw_intensity: np.ndarray, raw_gradient: 
             if lower-upper < 2:
                 continue
             body = float(np.mean(raw[upper+1:lower]))
+            # 两个相反梯度之间还需有亮纸身；只找到一对峰可能是反光或内部纹理。
             outside = min(float(np.mean(raw[max(0, upper-3):upper+1])),
                           float(np.mean(raw[lower:min(len(raw), lower+4)])))
             body_contrast = body-outside
@@ -229,6 +231,8 @@ def ordered_match(reference: np.ndarray, measured: np.ndarray,
     move = np.zeros((n+1, m+1), np.uint8)
     dp[:, 0], dp[0, :] = np.arange(n+1), np.arange(m+1)
     move[1:, 0], move[0, 1:] = 1, 2
+    # 类似编辑距离：匹配付归一化位置差，跳过观测付 1；回溯保证一对一且保序。
+    # insert 只保留已测到但未匹配的候选，不在图像空白处创造边界。
     for i in range(1, n+1):
         distances = np.abs(measured-reference[i-1])
         for j in range(1, m+1):
@@ -324,15 +328,70 @@ def fuse_polarity(rows: list[list[Observation]], polarity: str, strips: list,
         'anchor_strip': anchor, 'matching': matching, 'track_decisions': decisions}
 
 
-def opposite_duplicates(a: PaperEdgeTrack, b: PaperEdgeTrack) -> bool:
+def opposite_duplicates(a: PaperEdgeTrack, b: PaperEdgeTrack,
+                        cfg: CounterConfig | None = None) -> bool:
     """Only an observed body pair may establish same-sheet identity."""
     common = set(a.strip_positions) & set(b.strip_positions)
     if not common:
         return False
     pairs = a.local_evidence.get('opposite_positions', {})
-    matches = [abs(float(pairs[str(s)])-b.strip_positions[s]) <= 3
+    tolerance = 3.0
+    if cfg is not None and cfg.strip_sequence_adaptive_body_dedup_enabled:
+        spacing = a.local_evidence.get('spacing_from_local_candidates', 0)
+        # Pair peaks and track centroids can differ after multiscale smoothing.
+        # Keep tolerance well below a full observed paper spacing.
+        tolerance = max(tolerance, min(6.0, .22*spacing))
+    matches = [abs(float(pairs[str(s)])-b.strip_positions[s]) <= tolerance
                for s in common if str(s) in pairs]
     return len(matches) >= 2 and sum(matches) >= 0.6*len(matches)
+
+
+def associate_oriented_candidates(candidates, diagnostic, polarity, strips,
+                                  slopes, quality, offset, period, cfg, valid_strip_count=None):
+    """Order-preserving association of existing peaks using RAW orientation.
+
+    The ordinary classifier and sequence still decide acceptance. No strip
+    observations are created by prediction and no peaks are consumed by a
+    crossing greedy path before the neighbouring order is known.
+    """
+    if cfg.evidence_model:
+        from .tracking import associate_strip_peaks
+        centers=np.array([sum(v)/2 for v in strips])
+        tracks=associate_strip_peaks(candidates,period,cfg,valid_strip_count,
+            strip_centers=centers,orientation_fields=slopes,y_offset=offset)
+        debug={'enabled':True,'method':'direction_residual_DP_with_order_guard','generated_observations':0}
+        for track in tracks:
+            track.boundary_polarity=polarity
+        return tracks,debug
+    observations = diagnostic['polarities'][polarity]['strips']
+    rows = []
+    for s, candidates_row in enumerate(candidates):
+        row = []
+        for peak in candidates_row:
+            if peak.reason:
+                continue
+            nearby = [o for o in observations[s]['observations'] if abs(o['y']-peak.y) <= 2]
+            o = min(nearby, key=lambda o: abs(o['y']-peak.y)) if nearby else None
+            y = int(np.clip(round(peak.y)-offset,0,quality.shape[1]-1))
+            row.append(Observation(peak,polarity,float(quality[s,y]),
+                o['raw_contrast_8bit'] if o else 0.,o['raw_strength'] if o else 0.,
+                o['local_spacing'] if o else period,o['opposite_pair_y'] if o else None,
+                o['pair_score'] if o else 0.,o['pair_source'] if o else None,
+                o['scale_sources'] if o else [],o['raw_significance'] if o else 0.))
+        rows.append(row)
+    accepted,pending,debug = fuse_polarity(rows,polarity,strips,slopes,quality,offset,period,cfg)
+    tracks = sorted(accepted+pending,key=lambda t:t.center_y)
+    for track in tracks:
+        track.track_id = ''  # Batch classification assigns unique main IDs.
+        track.candidate_class,track.sequence_decision,track.reason = 'unclassified',None,None
+        # Restore the ordinary scoring policy; ordered fusion only groups nodes.
+        rebuilt = make_track(track.peak_candidates,period,
+                             valid_strip_count if valid_strip_count is not None else len(candidates),cfg)
+        rebuilt.boundary_polarity = polarity
+        rebuilt.local_evidence = track.local_evidence
+        track.__dict__.update(rebuilt.__dict__)
+    return tracks, {**debug,'enabled': True,'observation_policy': 'existing_candidates_only',
+                    'generated_observations': 0}
 
 
 def augment_observed_tracks(existing: list[PaperEdgeTrack], proposals: list[PaperEdgeTrack],
@@ -366,7 +425,10 @@ def augment_observed_tracks(existing: list[PaperEdgeTrack], proposals: list[Pape
                     opposite = evidence.get('opposite_positions', {})
                     paired = [abs(float(opposite[str(s)])-other.strip_positions[s])
                               for s in common if str(s) in opposite]
-                    if paired and np.median(paired) <= 3:
+                    same_body = (opposite_duplicates(candidate, other, cfg)
+                                 if cfg.strip_sequence_adaptive_body_dedup_enabled
+                                 else bool(paired and np.median(paired) <= 3))
+                    if same_body:
                         reason = 'existing_opposite_boundary_same_body'
                         break
         if reason is None:
@@ -460,6 +522,77 @@ def attach_raw_body_confirmation(tracks: list[PaperEdgeTrack], diagnostic: dict,
             'observations': evidence, 'interpretation': 'direct_evidence_not_accuracy_probability'}
 
 
+def choose_body_polarity(branches: dict, preferred: str) -> tuple[str, dict]:
+    """Choose the better observed boundary side, without using any count GT."""
+    quality = {}
+    for p, tracks in branches.items():
+        evidence = [t.local_evidence for t in tracks]
+        quality[p] = {
+            'weighted_support': float(np.mean([e['weighted_support'] for e in evidence])) if evidence else 0.,
+            'body_geometry_score': float(np.mean([e['weighted_support'] * e['paired_score'] * t.smoothness_score
+                                                  for e, t in zip(evidence, tracks)])) if evidence else 0.}
+    opposite = 'negative' if preferred == 'positive' else 'positive'
+    a,b = quality[preferred],quality[opposite]
+    support_gain = b['weighted_support']-a['weighted_support']
+    score_gain = b['body_geometry_score']-a['body_geometry_score']
+    switch = (len(branches[opposite]) >= 5 and score_gain >= 0
+              and support_gain >= 0 and max(score_gain,support_gain) >= .05)
+    selected = opposite if switch else preferred
+    return selected, {'preferred': preferred, 'selected': selected, 'changed': switch,
+                      'quality': quality, 'reason': 'raw_body_geometry_and_observation_support'
+                      if switch else 'no_clear_raw_body_advantage'}
+
+
+def suppress_shared_raw_bodies(tracks, diagnostic, raw_gradients, offset, preferred, cfg):
+    """Suppress same-side peaks sharing a RAW body with no intervening interface.
+
+    A missing normalized proposal is insufficient to merge adjacent sheets:
+    an actual opposite RAW transition between them preserves their identity.
+    """
+    entries=[]
+    for track in tracks:
+        polarity=track.boundary_polarity or preferred
+        observed={}
+        for s,y in track.strip_positions.items():
+            candidates=[o for o in diagnostic['polarities'][polarity]['strips'][s]['observations']
+                        if abs(o['y']-y)<=2 and o['opposite_pair_y'] is not None
+                        and o['pair_score']>=.25 and o['raw_significance']>=cfg.strip_sequence_min_raw_significance]
+            if candidates:observed[s]=min(candidates,key=lambda o:abs(o['y']-y))
+        strength=float(np.median([o['raw_significance']*o['pair_score'] for o in observed.values()])) if observed else 0.
+        entries.append((track,polarity,observed,strength*track.support_ratio))
+    selected=[];rejected=[];decisions=[]
+    for track,p,observed,strength in sorted(entries,key=lambda e:-e[3]):
+        duplicate=None;proof=[]
+        for other,q,previous,_ in selected:
+            if p!=q:continue
+            opposite='negative' if p=='positive' else 'positive'
+            matching=[];comparisons=0
+            for s,o in observed.items():
+                if s not in previous:continue
+                b=previous[s];comparisons+=1
+                if abs(o['opposite_pair_y']-b['opposite_pair_y'])>3:continue
+                a_y,b_y=sorted([track.strip_positions[s],other.strip_positions[s]])
+                a=int(round(a_y-offset))+3;b0=int(round(b_y-offset))-2
+                pair=int(round(o['opposite_pair_y']-offset))
+                response=raw_gradients[opposite][s]
+                peak=float(np.max(response[max(0,pair-2):min(len(response),pair+3)]))
+                between=float(np.max(response[max(0,a):min(len(response),b0)])) if b0>a else 0.
+                if peak<=cfg.epsilon or between>=.5*peak:continue
+                matching.append({'strip':s,'opposite_pair_y':o['opposite_pair_y'],
+                                 'intervening_raw_transition_ratio':between/peak})
+            if len(matching)>=3 and len(matching)>=.6*comparisons:
+                duplicate=other;proof=matching;break
+        if duplicate is None:selected.append((track,p,observed,strength))
+        else:
+            track.reason='shared_raw_body_without_intervening_interface'
+            track.sequence_decision='suppressed';rejected.append(track)
+            decisions.append({'removed_track_id':track.track_id,'kept_track_id':duplicate.track_id,
+                              'observed_pairs':proof})
+    return sorted([e[0] for e in selected],key=lambda t:t.center_y),rejected,{
+        'enabled':True,'count_before':len(tracks),'count_after':len(selected),'decisions':decisions,
+        'policy':'same_raw_opposite_boundary_and_no_intervening_raw_interface'}
+
+
 def build_strip_consensus(data, raw_intensity, raw_gradient, gray, strips,
                           slopes, offset, period, mask, chosen, cfg):
     quality = quality_profiles(gray, strips, cfg)
@@ -470,14 +603,35 @@ def build_strip_consensus(data, raw_intensity, raw_gradient, gray, strips,
         branch[polarity], rejected, fusion[polarity] = fuse_polarity(
             sequences[polarity], polarity, strips, slopes, quality, offset, period, cfg)
         pending.extend(rejected)
+    polarity_choice = {'selected': chosen, 'changed': False, 'enabled': cfg.raw_polarity_consensus_enabled}
+    if cfg.raw_polarity_consensus_enabled:
+        chosen, polarity_choice = choose_body_polarity(branch, chosen)
+        polarity_choice['enabled'] = True
     selected = list(branch[chosen])
     fallback, suppressed = [], []
     opposite = 'negative' if chosen == 'positive' else 'positive'
     if cfg.strip_sequence_dual_enabled:
         for candidate in branch[opposite]:
-            duplicate = next((t for t in selected if opposite_duplicates(t, candidate)
-                              or opposite_duplicates(candidate, t)), None)
+            duplicate = next((t for t in selected if opposite_duplicates(t, candidate, cfg)
+                              or opposite_duplicates(candidate, t, cfg)), None)
             if duplicate is not None:
+                # An accepted but incomplete primary fragment must not hide
+                # the same body's well-observed opposite boundary. Replace
+                # the representation, never count both sides of one paper.
+                if (cfg.strip_sequence_best_boundary_enabled
+                        and duplicate.support_count < cfg.num_strips*.5
+                        and candidate.support_count >= cfg.num_strips*.6
+                        and candidate.local_evidence['paired_score'] >= .65
+                        and candidate.local_evidence['weighted_support'] >= .6):
+                    selected.remove(duplicate)
+                    duplicate.reason = 'same_body_better_observed_opposite'
+                    duplicate.sequence_decision = 'suppressed'
+                    suppressed.append(duplicate)
+                    candidate.source, candidate.sequence_decision = 'recovered', 'rescued'
+                    candidate.local_evidence['replaces_body_fragment'] = duplicate.track_id
+                    selected.append(candidate)
+                    fallback.append(candidate.track_id)
+                    continue
                 candidate.reason = 'opposite_boundary_same_sheet'
                 candidate.sequence_decision = 'suppressed'
                 suppressed.append(candidate)
@@ -491,7 +645,7 @@ def build_strip_consensus(data, raw_intensity, raw_gradient, gray, strips,
             # A primary fragment matching this body means existence is observed,
             # but identity ambiguity remains: do not add the opposite as a second paper.
             fragment = next((t for t in pending if t.boundary_polarity == chosen and
-                (opposite_duplicates(t, candidate) or opposite_duplicates(candidate, t))), None)
+                (opposite_duplicates(t, candidate, cfg) or opposite_duplicates(candidate, t, cfg))), None)
             if fragment is not None:
                 if (fragment.support_count >= 2 and fragment.local_evidence['weighted_support'] >= 0.2
                         and candidate.local_evidence['paired_score'] >= 0.65):
@@ -521,7 +675,8 @@ def build_strip_consensus(data, raw_intensity, raw_gradient, gray, strips,
         vals = np.array([np.median(vals[ys == y]) for y in unique], np.float32)
         ys = unique
     local = LocalPeriod(ys, vals, np.zeros_like(vals), period)
-    debug.update(fusion=fusion, independent_counts={p: len(branch[p]) for p in branch},
+    debug.update(fusion=fusion, polarity_choice=polarity_choice,
+                 independent_counts={p: len(branch[p]) for p in branch},
                  opposite_fallback_track_ids=fallback, opposite_same_sheet_suppressed=len(suppressed),
                  confirmed_before_verifier=len(selected), pending_count=len(pending),
                  quality_source='raw_pre_peak_local_windows', quality_is_accuracy=False,

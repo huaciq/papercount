@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-layer-counter"
+version = "0.1.0"
+description = "Paper layer counting with regions and tracks detectors"
+readme = "API_README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.23", "opencv-python>=4.5", "scipy>=1.9",
+    "matplotlib>=3.6", "PyYAML>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["paper_counter*"]
+
+[tool.setuptools.package-data]
+paper_counter = ["presets/*.yaml"]

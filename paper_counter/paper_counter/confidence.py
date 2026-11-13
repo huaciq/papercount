@@ -7,7 +7,6 @@ from typing import Any
 import numpy as np
 
 from .config import CounterConfig
-from .models import PeakCandidate
 
 
 def compute_geometry_confidence(tracks: list, sequence: object, config: CounterConfig,
@@ -32,7 +31,8 @@ def compute_geometry_confidence(tracks: list, sequence: object, config: CounterC
         parts["regularity_anomaly_ratio"] = float(np.mean(regularity.final_regularity < config.regularity_irregular_threshold))
     weights = config.geometry_confidence_weights
     score = sum(parts[k] * weights[k] for k in weights) / sum(weights.values())
-    rescued_ratio = len(sequence.rescued) / len(tracks)
+    selected_ids={t.track_id for t in tracks}
+    rescued_ratio = len({t.track_id for t in sequence.rescued} & selected_ids) / len(tracks)
     score *= (1 - config.repair_confidence_penalty * rescued_ratio)
     score *= 1 / (1 + config.geometry_confidence_ambiguity_penalty * ambiguity_ratio)
     score *= parts["ambiguity"] ** config.geometry_confidence_ambiguity_exponent
@@ -69,25 +69,3 @@ def compute_track_confidence(tracks: list, local: object, config: CounterConfig)
     return float(np.clip(score, 0, 1)), {**parts, "recovered_ratio": recovered,
         "suspicious_gap_ratio": suspicious, "sample_factor": sample_factor,
         "note": "Algorithm quality/consistency score, not count-correctness probability"}
-
-
-def compute_confidence(peaks: list[PeakCandidate], period: float | None, acf_score: float,
-                       config: CounterConfig) -> tuple[float, dict[str, Any]]:
-    """Penalize irregular gaps, weak support, repairs and small sample counts."""
-    if len(peaks) < 3 or period is None:
-        return 0.0, {"reason": "insufficient_edges_or_no_period"}
-    gaps = np.diff([p.y for p in peaks])
-    cv = float(np.std(gaps) / np.mean(gaps))
-    mismatch = float(np.mean(np.abs(gaps - period)) / period)
-    spacing = 1.0 / (1.0 + cv + mismatch)
-    vote = float(np.mean([p.vote_ratio for p in peaks]))
-    acf = float(np.clip(acf_score, 0, 1))
-    repaired_fraction = sum(p.source == "repaired" for p in peaks) / len(peaks)
-    sample_factor = min(1.0, len(peaks) / config.confidence_min_edges)
-    parts = {"spacing": spacing, "vote": vote, "acf": acf}
-    weighted = sum(parts[k] * w for k, w in config.confidence_weights.items()) / sum(config.confidence_weights.values())
-    result = weighted * (1 - config.repair_confidence_penalty * repaired_fraction) * sample_factor
-    return float(np.clip(result, 0, 1)), {**parts, "gap_cv": cv, "period_mismatch": mismatch,
-        "repaired_fraction": repaired_fraction, "sample_factor": sample_factor,
-        "note": "Heuristic score, not a calibrated probability of correct count"}
-

@@ -87,6 +87,7 @@ def build_render_metadata(debug: dict[str, Any], canvas_width: int, canvas_heigh
         "original_width": int(original_shape[1]),
         "original_height": int(original_shape[0]),
         "stack_crop": debug.get("active_stack_roi", roi),
+        "geometry_preprocessing": debug.get("geometry_preprocessing"),
         "roi": roi,
         "transform": transform.to_dict(),
     }
@@ -138,7 +139,12 @@ def transform_from_metadata(metadata: dict[str, Any]) -> OverlayTransform:
 
 
 def detection_to_original(x: float, y: float, rotation_ccw_degrees: int,
-                          original_width: int, original_height: int) -> tuple[float, float]:
+                          original_width: int, original_height: int,
+                          geometry: dict | None = None) -> tuple[float, float]:
+    if geometry is not None:
+        matrix = geometry['detection_to_input']
+        x, y = (matrix[0][0]*x+matrix[0][1]*y+matrix[0][2],
+                matrix[1][0]*x+matrix[1][1]*y+matrix[1][2])
     if rotation_ccw_degrees == 0:
         return float(x), float(y)
     if rotation_ccw_degrees == 90:
@@ -147,12 +153,17 @@ def detection_to_original(x: float, y: float, rotation_ccw_degrees: int,
 
 
 def original_to_detection(x: float, y: float, rotation_ccw_degrees: int,
-                          original_width: int, original_height: int) -> tuple[float, float]:
-    if rotation_ccw_degrees == 0:
-        return float(x), float(y)
+                          original_width: int, original_height: int,
+                          geometry: dict | None = None) -> tuple[float, float]:
     if rotation_ccw_degrees == 90:
-        return float(y), float(original_width - 1 - x)
-    raise ValueError("Only 0 and 90 degree counter-clockwise mappings are supported")
+        x, y = float(y), float(original_width - 1 - x)
+    elif rotation_ccw_degrees != 0:
+        raise ValueError("Only 0 and 90 degree counter-clockwise mappings are supported")
+    if geometry is not None:
+        matrix = geometry.get('input_to_detection', [[1,0,0],[0,1,0],[0,0,1]])
+        x, y = (matrix[0][0]*x+matrix[0][1]*y+matrix[0][2],
+                matrix[1][0]*x+matrix[1][1]*y+matrix[1][2])
+    return float(x), float(y)
 
 
 __all__ = [

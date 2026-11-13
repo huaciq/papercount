@@ -1,0 +1,55 @@
+{
+  "source": "用户逐图补充的误差位置，2026-10-14",
+  "coordinate_space": "result_overlay_including_title_confirmed_by_user",
+  "interval_semantics": "one_curved_paper_boundary_min_max_y_confirmed_by_user",
+  "reference_run": "output/revision_20261013/gap_full_v11",
+  "status": "user coordinates confirmed; track identity matching still requires curve-level review",
+  "images": {
+    "测试集/260921-200g铜板/Pic_2026_09_21_140500_4-200g3-1.bmp": {
+      "original_text": "2584无线漏检、2702红线",
+      "marks": [{"y": 2584, "type": "missed_no_line"}, {"y": 2702, "type": "reported_red_line"}]
+    },
+    "测试集/260921-200g铜板/Pic_2026_09_21_140511_6-200g4-1.bmp": {
+      "original_text": "394、778、879、1279、1913、2017、（2383，2428）、（2458，2498）、（2555，2591），（2598，2638），（2611，2656）",
+      "marks": [{"y": 394}, {"y": 778}, {"y": 879}, {"y": 1279}, {"y": 1913}, {"y": 2017}, {"range": [2383, 2428]}, {"range": [2458, 2498]}, {"range": [2555, 2591]}, {"range": [2598, 2638]}, {"range": [2611, 2656]}]
+    },
+    "测试集/260921-200g铜板/Pic_2026_09_21_140517_7-200g4-2.bmp": {
+      "original_text": "2327，2381，2564，2657",
+      "marks": [{"y": 2327}, {"y": 2381}, {"y": 2564}, {"y": 2657}]
+    },
+    "测试集/260921-6号纸/Pic_2026_09_21_114732_4-6号纸2-2.bmp": {
+      "original_text": "1600开始往下6条全是在背景上检测的",
+      "marks": [{"from_y": 1600, "type": "false_background_tracks", "reported_count": 6}]
+    },
+    "测试集/260921-6号纸/Pic_2026_09_21_114824_8-6号纸4-2.bmp": {
+      "original_text": "1277", "marks": [{"y": 1277}]
+    },
+    "测试集/260921-白底白板2号纸/Pic_2026_09_21_133656_1-白底白板1-1.bmp": {
+      "original_text": "892", "marks": [{"y": 892}]
+    },
+    "测试集/260921灰色淋膜纸/Pic_2026_09_21_135758_1-灰色淋膜纸1-1.bmp": {
+      "original_text": "122、1755往下全是背景检测",
+      "marks": [{"y": 122}, {"from_y": 1755, "type": "false_background_tracks"}]
+    },
+    "测试集/260921灰色淋膜纸/Pic_2026_09_21_135825_2-灰色淋膜纸1-2.bmp": {
+      "original_text": "1340开始然后关联到下一张了，然后它的下一张1365左右没有检测到",
+      "marks": [{"y": 1340, "type": "reported_identity_switch"}, {"y": 1365, "type": "reported_missing_next_layer"}]
+    },
+    "测试集/260921灰色淋膜纸/Pic_2026_09_21_135848_4-灰色淋膜纸2-2.bmp": {
+      "original_text": "317", "marks": [{"y": 317}]
+    },
+    "测试集/260921灰色淋膜纸/Pic_2026_09_21_135907_7-灰色淋膜纸4-1.bmp": {
+      "original_text": "1206关联检测的很好，但是是红线被删除了",
+      "marks": [{"y": 1206, "type": "reported_good_track_removed"}]
+    },
+    "测试集/260921练功卷/Pic_2026_09_21_141037_1-练功卷1-1.bmp": {
+      "original_text": "1071", "marks": [{"y": 1071}]
+    },
+    "测试集/260921长条淋膜纸/Pic_2026_09_21_135205_3-长条淋膜纸2-1.bmp": {
+      "original_text": "暂时不处理", "skip": true, "marks": []
+    },
+    "验证集/4-2.bmp": {
+      "original_text": "4-2.bmp 662红线", "marks": [{"y": 662, "type": "reported_red_line"}]
+    }
+  }
+}

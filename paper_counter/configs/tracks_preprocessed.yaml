@@ -1,0 +1,17 @@
+# User-facing copy of the explicit horizontal-stack tracks variant.
+profile: e3_3
+algorithm: tracks
+auto_geometry_enabled: true
+geometry_target_spacing: 14.0
+tracks_preprocessing_enabled: true
+tracks_gap_enhancement_enabled: true
+tracks_gap_kernel_width_ratio: 0.08
+tracks_gap_kernel_height: 3
+tracks_gap_gain: 0.25
+tracks_horizontal_smoothing_sigma_x: 2.0
+tracks_horizontal_smoothing_sigma_y: 0.35
+tracks_postprocessing_enabled: true
+tracks_post_min_gap_ratio: 0.20
+directional_smoothing_enabled: true
+multiscale_gradient_enabled: true
+gradient_polarity: positive

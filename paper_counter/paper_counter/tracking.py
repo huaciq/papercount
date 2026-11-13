@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Callable
 import numpy as np
+from .boundary_direction import predicted_shift
 from .config import CounterConfig
 from .models import StripPeakCandidate, PaperEdgeTrack
 
@@ -71,7 +72,8 @@ def make_track(peaks: list[StripPeakCandidate], period: float, valid_strip_count
 
 def associate_strip_peaks(candidates: list[list[StripPeakCandidate]], period: float,
                           config: CounterConfig, valid_strip_count: int | None = None,
-                          recovery: bool = False) -> list[PaperEdgeTrack]:
+                          recovery: bool = False, strip_centers=None, orientation_fields=None,
+                          y_offset: int = 0) -> list[PaperEdgeTrack]:
     """Find second-order optimal paths through strip candidates.
 
     DP states keep the last two nodes and whether a strong node was seen.
@@ -85,6 +87,8 @@ def associate_strip_peaks(candidates: list[list[StripPeakCandidate]], period: fl
         return []
     valid = valid_strip_count if valid_strip_count is not None else len(candidates)
     by_strip: dict[int, list[int]] = {}
+    # 横向 DP：当前峰隐含在 states[j] 中，键保存前一峰和“是否已有强峰”。
+    # 保留前一峰才能在下一次扩展时比较两段斜率，计算曲率代价。
     states: list[dict[tuple[int, bool], tuple[float, tuple[int, ...]]]] = []
     shift = (config.track_max_neighbor_jump_ratio if config.track_continuity_geometry_enabled else config.max_neighbor_shift_ratio) * period
     for j, node in enumerate(nodes):
@@ -97,6 +101,9 @@ def associate_strip_peaks(candidates: list[list[StripPeakCandidate]], period: fl
                 previous = nodes[i]
                 dx = node.strip_index - previous.strip_index
                 slope = (node.y - previous.y) / dx
+                if orientation_fields is not None:
+                    predicted=predicted_shift(orientation_fields,strip_centers,previous.strip_index,node.strip_index,previous.y,y_offset)
+                    slope=(node.y-previous.y-predicted)/dx
                 if abs(slope) > shift:
                     continue
                 for (before, has_strong), (value, path) in states[i].items():
@@ -104,6 +111,9 @@ def associate_strip_peaks(candidates: list[list[StripPeakCandidate]], period: fl
                     if before >= 0:
                         earlier = nodes[before]
                         old_slope = (previous.y - earlier.y) / (previous.strip_index - earlier.strip_index)
+                        if orientation_fields is not None:
+                            old_prediction=predicted_shift(orientation_fields,strip_centers,earlier.strip_index,previous.strip_index,earlier.y,y_offset)/(previous.strip_index-earlier.strip_index)
+                            old_slope-=old_prediction
                         curvature = abs(slope - old_slope)
                     shift_weight = config.track_geometry_shift_penalty if config.track_continuity_geometry_enabled else config.track_shift_penalty
                     curve_weight = config.track_geometry_curvature_penalty if config.track_continuity_geometry_enabled else config.track_curvature_penalty
@@ -117,6 +127,7 @@ def associate_strip_peaks(candidates: list[list[StripPeakCandidate]], period: fl
                         change_scale = max(config.track_max_neighbor_change_ratio * period, config.epsilon)
                         cost += config.track_unreasonable_change_penalty * max(0., curvature / change_scale - 1)
                     key = (i, has_strong or strong)
+                    # 路径累计值 = 已有值 + 当前峰奖励 - 位移/曲率/跳条带代价。
                     score = value + reward - cost
                     if key not in current or score > current[key][0]:
                         current[key] = (score, path + (j,))
@@ -125,6 +136,7 @@ def associate_strip_peaks(candidates: list[list[StripPeakCandidate]], period: fl
     # DP best paths from every endpoint, followed by conflict-free extraction.
     paths = sorted((entry for state in states for (_, strong), entry in state.items()
                     if recovery or strong), key=lambda entry: entry[0], reverse=True)
+    # 多条轨迹按分数贪心取出并独占观测；这不是整组轨迹的全局联合最优解。
     used: set[int] = set()
     tracks = []
     for _, path in paths:
@@ -143,6 +155,14 @@ def associate_strip_peaks(candidates: list[list[StripPeakCandidate]], period: fl
             # The production batch classification must assign globally unique
             # IDs after conflict-free extraction.
             candidate.track_id = ""
+        if orientation_fields is not None:
+            crossing=False
+            for selected in tracks:
+                common=set(candidate.strip_positions)&set(selected.strip_positions)
+                differences=[candidate.strip_positions[s]-selected.strip_positions[s] for s in common]
+                if sum(d>2 for d in differences)>=2 and sum(d< -2 for d in differences)>=2:
+                    crossing=True;break
+            if crossing:continue
         used.update(path)
         tracks.append(candidate)
     return sorted(tracks, key=lambda t: t.center_y)
@@ -186,7 +206,16 @@ def classify_tracks(tracks: list[PaperEdgeTrack], config: CounterConfig
     for i, track in enumerate(tracks):
         if not track.track_id:
             track.track_id = f"seed_{i:05d}"
+        if config.evidence_model and track.local_evidence.get('paper_body',{}).get('state')=='absent':
+            track.candidate_class='garbage';track.reason='measured_non_paper_body'
+            track.classification_reason=track.reason;garbage.append(track)
+            continue
         accepted, _ = validate_tracks([track], config, recovery=track.source == "recovered")
+        body=track.local_evidence.get('paper_body',{})
+        if (config.evidence_model and track.reason in {'low_support','low_continuity'} and body.get('local_anchor') and
+                track.smoothness_score>=config.min_track_smoothness and track.strong_support_count>=1):
+            accepted=[track]
+            track.reason=None
         reason = track.reason
         if accepted:
             track.candidate_class = "strong"

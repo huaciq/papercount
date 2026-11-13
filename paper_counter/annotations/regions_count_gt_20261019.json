@@ -1,0 +1,42 @@
+{
+  "schema": "regions_count_gt_v1",
+  "version": "20261019_new_test",
+  "images": {
+    "新测试/1.bmp": {
+      "count": 44,
+      "status": "verified",
+      "image_sha256": "46d4fa97bad9cb0bce7d0fedce4ee67893013e3a7335ec43ba88ff18c65cc64a",
+      "source": "用户确认 2026-10-19"
+    },
+    "新测试/2.bmp": {
+      "count": 56,
+      "status": "verified",
+      "image_sha256": "1f9c20233a2da160fe75534d2287409e1f2c2bc0a4e92ce7fe5a73e25658e2ab",
+      "source": "用户确认 2026-10-19"
+    },
+    "新测试/3.bmp": {
+      "count": 56,
+      "status": "verified",
+      "image_sha256": "825639d7f31788974a374ff575ff534ae615821a3cff54155116dd9575a3ab94",
+      "source": "用户确认 2026-10-19"
+    },
+    "新测试/4.bmp": {
+      "count": 56,
+      "status": "verified",
+      "image_sha256": "5cace85e823ffb7d6ea992b9a543a1ede3084b91f880227a0ba90cb6eb59c882",
+      "source": "用户确认 2026-10-19"
+    },
+    "新测试/5.bmp": {
+      "count": 56,
+      "status": "verified",
+      "image_sha256": "fd9887e956c6477344d29ff6198c501e1fc082d7a1dec04ed6a182070a37ecbc",
+      "source": "用户确认 2026-10-19"
+    },
+    "新测试/6.bmp": {
+      "count": 56,
+      "status": "verified",
+      "image_sha256": "fd2b289816fe68c80cfce6c0796acb44842b80a85aaa18cd4b1c9021c0251caf",
+      "source": "用户确认 2026-10-19"
+    }
+  }
+}

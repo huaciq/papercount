@@ -78,6 +78,8 @@ def make_strip_profiles_diagnostic(gy: np.ndarray, polarity: str, config: Counte
         bounds.append((a, b))
     profiles = np.empty((config.num_strips, h), dtype=np.float32)
     diagnostics = []
+    # 竖向条带沿 x 分区，每个条带压成长度 H 的信号；输出形状为 [S, H]。
+    # median 能压制少量异常列，也可能削弱在条带内倾斜或仅局部可见的纸边。
     sign = 1.0 if polarity == "positive" else -1.0
     for index, (x1, x2) in enumerate(bounds):
         response = gy[:, x1:x2] * sign
@@ -164,6 +166,7 @@ def normalize_and_fuse(raw_profiles: np.ndarray, epsilon: float) -> tuple[np.nda
         med, scale, method = robust_scale(profile, epsilon)
         valid = scale > epsilon
         if valid:
+            # 各条带按自身 median/MAD 标准化，避免较亮条带支配融合信号。
             normalized[i] = (profile - med) / (scale + epsilon)
             active.append(i)
         stats.append({"strip": i, "median": med, "scale": scale, "scale_method": method, "active": valid})

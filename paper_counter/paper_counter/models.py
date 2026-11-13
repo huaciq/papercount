@@ -37,6 +37,8 @@ class PaperCountResult:
     artifacts: dict[str, Any] = field(default_factory=dict, repr=False)
     paper_edge_tracks: list[PaperEdgeTrack] = field(default_factory=list)
     rejected_tracks: list[PaperEdgeTrack] = field(default_factory=list)
+    # Region boxes are image regions, never synthetic edge-track observations.
+    region_boxes: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def edge_positions(self) -> list[float]:
@@ -46,6 +48,8 @@ class PaperCountResult:
 
 @dataclass
 class StripPeakCandidate:
+    # 一个条带中的一次局部峰观测；跨条带的多个峰可共同支持同一张纸。
+    # y 已加 ROI 偏移，属于传入 process() 的图像坐标；旋转前坐标由 CLI 映射。
     strip_index: int
     y: float
     height: float
@@ -66,6 +70,8 @@ class StripPeakCandidate:
 
 @dataclass
 class PaperEdgeTrack:
+    # 一条纸边的跨条带观测集合。center_y 是观测 y 的中位数，不是拟合的水平线。
+    # strip_positions 只存真实观测；曲线插值用于几何比较，不增加支持数或张数。
     center_y: float
     strip_positions: dict[int, float]
     strip_peak_strengths: dict[int, float]
@@ -98,6 +104,7 @@ class PaperEdgeTrack:
     raw_valid_ratio: float = 1.0
     curve_geometry: dict[str, Any] = field(default_factory=dict)
     continuity_geometry: dict[str, Any] = field(default_factory=dict)
+    # 双极性补充时，每条轨迹可选纸身的上边或下边；同一纸身仍只能计一次。
     boundary_polarity: str = ""
     local_evidence: dict[str, Any] = field(default_factory=dict)
 

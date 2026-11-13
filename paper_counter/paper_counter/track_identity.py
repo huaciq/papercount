@@ -87,6 +87,8 @@ def extract_track_aligned_profiles(track: PaperEdgeTrack, local_spacing: float,
                            config.identity_profile_extent_ratio,
                            config.identity_profile_samples)
     positive_primary = config.gradient_polarity == "positive"
+    # 正边界翻转局部采样方向后，也统一成“负相对坐标是纸身、正侧是暗缝”。
+    # 历史字段 above/negative 在这里表示纸身侧/主极性，不总是图像物理上方/负梯度。
     direction = -1.0 if positive_primary else 1.0
     arrays = (raw_profiles, normalized_profiles,
               positive_profiles if positive_primary else negative_profiles,
@@ -133,7 +135,8 @@ class EdgeTemplate:
 def build_edge_template(profiles: dict[str, AlignedTrackProfiles], reference_ids: list[str],
                         config: CounterConfig) -> EdgeTemplate:
     """Build an iterative median/MAD image template; never use the mean."""
-    usable = [track_id for track_id in reference_ids if track_id in profiles]
+    usable = [track_id for track_id in reference_ids if track_id in profiles
+              and len(profiles[track_id].raw_by_strip)]
     names = ("raw", "normalized", "negative", "positive")
     size = config.identity_profile_samples
     if not usable:
@@ -231,6 +234,9 @@ class TrackIdentityFeatures:
     evidence_families: list[str] | None = None
     false_family: str = "NONE"
     proposed_decision: str = "TRUSTED"
+    endpoint_identity: dict[str, Any] | None = None
+    partial_endpoint: dict[str, Any] | None = None
+    complete_identity_strips: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -321,6 +327,10 @@ def conservative_identity_decision(families: list[str], needs_verification: bool
                                    ) -> tuple[str, str]:
     """Require two independent evidence families; uncertainty always keeps."""
     unique = set(families)
+    if config.evidence_model and 'background' in unique and 'paper_support' in unique:
+        # Background already requires low paper support: one observation.
+        unique.discard('paper_support')
+    # 多个相关特征先按证据类别去重；低总分本身不足以删除一条可见纸边。
     if not needs_verification:
         return "NONE", "TRUSTED"
     enough = len(unique) >= config.identity_min_reject_evidence_families
@@ -333,6 +343,88 @@ def conservative_identity_decision(families: list[str], needs_verification: bool
     if identity_z_score < -config.identity_ambiguous_z:
         return "UNKNOWN_AMBIGUOUS", "AMBIGUOUS_KEEP"
     return "NONE", "SUSPICIOUS_KEEP"
+
+
+def endpoint_identity_v2(track: PaperEdgeTrack, feature: TrackIdentityFeatures,
+                         raw_profiles: np.ndarray, y_offset: float,
+                         raw_mask: RawStackMask, config: CounterConfig) -> dict[str, Any]:
+    """Use only inward RAW body, observed strips, geometry and foreground.
+
+    Endpoint scope comes from actual ROI bounds and measured local spacing.
+    One-sided sampling never clamps/extrapolates missing outside pixels, never
+    requires an opposite edge/template, and cannot create a new observation.
+    Background is a score penalty, not the historical absolute veto.
+    """
+    height = raw_profiles.shape[1]
+    top, bottom = float(y_offset), float(y_offset + height - 1)
+    distances = (max(0., track.center_y-top), max(0., bottom-track.center_y))
+    side = 'top' if distances[0] <= distances[1] else 'bottom'
+    distance = min(distances)
+    spacing = max(feature.local_spacing, config.epsilon)
+    band = config.endpoint_roi_band_ratio*spacing
+    record = {'version': 2, 'is_endpoint': distance <= band,
+              'side': side, 'distance_to_roi_px': distance, 'band_px': band,
+              'roi_y1': top, 'roi_y2_exclusive': bottom+1}
+    if not record['is_endpoint']:
+        return record
+    direction = 1.0 if side == 'top' else -1.0
+    # Native-depth RAW thresholds. The background estimate is independent of
+    # the selected track/template; no intensity normalization is used here.
+    raw_rows = np.asarray(raw_mask.statistics['row_median'], float)
+    invalid = raw_rows[raw_mask.states == StackState.INVALID]
+    background = float(np.median(invalid)) if len(invalid) else float(np.percentile(raw_profiles, 10))
+    bright = float(np.percentile(raw_profiles, 90))
+    contrast = max(bright-background, config.epsilon)
+    cutoff = background + config.endpoint_raw_contrast_ratio*contrast
+    samples, body_votes, foreground = [], [], []
+    for strip, y in sorted(track.strip_positions.items()):
+        strip = int(strip)
+        if not 0 <= strip < raw_profiles.shape[0]:
+            continue
+        coordinates = y-y_offset+direction*np.linspace(.08, .45, 17)*spacing
+        valid = (coordinates >= 0)&(coordinates <= height-1)
+        if np.sum(valid) < 9:
+            continue
+        coordinates = coordinates[valid]
+        values = np.interp(coordinates, np.arange(height), raw_profiles[strip])
+        raw_bright_fraction = float(np.mean(values > cutoff))
+        body_votes.append(float(np.median(values) > cutoff and raw_bright_fraction >= .6))
+        permission = np.mean([raw_mask.state_at(q+y_offset) != StackState.INVALID for q in coordinates])
+        evidence = np.mean([raw_mask.evidence_at(q+y_offset) for q in coordinates])
+        foreground.append(float(min(permission, evidence, raw_bright_fraction)))
+        samples.append({'strip': strip, 'observed_y': float(y),
+                        'inward_raw_median': float(np.median(values)),
+                        'bright_fraction': raw_bright_fraction, 'valid_sample_count': len(values),
+                        'foreground_support': foreground[-1]})
+    body = float(np.mean(body_votes)) if body_votes else 0.
+    fg = float(np.mean(foreground)) if foreground else 0.
+    support = min(1., track.support_count/max(1, config.num_strips))
+    # Historical background family contributes negative evidence, never a veto.
+    old_background = float('background' in (feature.evidence_families or []))
+    negative = max(old_background, 1-fg)
+    score = _clip01(.5*body+.2*support+.2*track.smoothness_score+.1*fg
+                    -config.endpoint_background_penalty*negative)
+    gates = {
+        'inward_raw_body': body >= config.endpoint_min_raw_body_support and bright > background+config.epsilon,
+        'multiple_observed_strips': len(samples) >= config.min_absolute_track_support
+            and track.support_ratio >= config.min_track_support_ratio,
+        'geometric_continuity': track.continuity_ratio >= config.min_continuity_ratio
+            and track.smoothness_score >= config.min_track_smoothness,
+        'foreground_support': fg >= config.endpoint_min_foreground_support,
+        'evidence_after_background_penalty': score >= config.endpoint_min_evidence_score,
+    }
+    keep = all(gates.values())
+    return {**record, 'inward_direction': int(direction), 'sampling_relative_interval': [.08,.45],
+            'raw_background_level': background, 'raw_bright_reference': bright, 'raw_body_cutoff': cutoff,
+            'inward_raw_body_support': body, 'foreground_support': fg,
+            'background_negative_evidence': negative, 'evidence_score': score,
+            'observed_strips': len(samples), 'gates': gates, 'samples': samples,
+            'decision': 'KEEP_ENDPOINT_V2' if keep else 'REJECT_ENDPOINT_V2',
+            'failed_gates': [name for name,passed in gates.items() if not passed],
+            'legacy_false_family': feature.false_family,
+            'legacy_proposed_decision': feature.proposed_decision,
+            'outside_context_required': False, 'template_required': False,
+            'opposite_edge_required': False, 'background_is_absolute_veto': False}
 
 
 def _positive_pair(track: PaperEdgeTrack, spacing: float, positive_profiles: np.ndarray,
@@ -424,6 +516,7 @@ def analyze_track_identity(tracks: list[PaperEdgeTrack], raw_profiles: np.ndarra
             negative_profiles, positive_profiles, y_offset, config,
         )
     reference_ids = select_reference_track_ids(tracks, regularity, competitions, config)
+    # 模板来自本图内较可靠的轨迹，以对齐剖面的中位数建立；并非训练模型。
     template = build_edge_template(aligned, reference_ids, config)
     competition_by_id = {row["middle_track_id"]: row for row in competitions
                          if row.get("secondary_texture_likely")}
@@ -442,9 +535,15 @@ def analyze_track_identity(tracks: list[PaperEdgeTrack], raw_profiles: np.ndarra
         _, norm_dist, norm_sim = _profile_comparison(
             profile.normalized, template.normalized, template.normalized_mad, config.epsilon)
         shape = _negative_shape(profile.negative, config)
-        above = _region(profile.raw, profile.relative_y, -.55, -.10)
+        body_proof=track.local_evidence.get('paper_body',{}) if config.evidence_model else {}
+        trusted_sampling=(track.local_evidence.get('isolated_raw_component',{}).get('verified')
+            or track.track_id.startswith('body_'))
+        width=body_proof.get('observed_width') if trusted_sampling else None
+        paper_extent=min(.55,.75*width/spacing) if width else .55
+        paper_inner=min(.10,.15*width/spacing) if width else .10
+        above = _region(profile.raw, profile.relative_y, -paper_extent, -paper_inner)
         below = _region(profile.raw, profile.relative_y, .05, .45)
-        above_norm = _region(profile.normalized, profile.relative_y, -.55, -.10)
+        above_norm = _region(profile.normalized, profile.relative_y, -paper_extent, -paper_inner)
         below_norm = _region(profile.normalized, profile.relative_y, .05, .45)
         paper_above = _paper_score(above["median"], raw_mask, config)
         paper_below = _paper_score(below["median"], raw_mask, config)
@@ -569,8 +668,54 @@ def analyze_track_identity(tracks: list[PaperEdgeTrack], raw_profiles: np.ndarra
         if feature.negative_isolation < config.identity_low_negative_isolation:
             families.append("negative_shape")
         feature.evidence_families = families
+        composite=track.local_evidence.get('composite_structure',{})
+        if config.composite_layers_enabled and composite.get('verified') and composite.get('bounded_by_references'):
+            # RAW完整结构允许纸内暗纹、亮分界；这些亮带模型的反证不再独立成立。
+            replaced=[v for v in families if v in {'background','paper_support','template','negative_shape','strip_consistency'}]
+            families=[v for v in families if v not in replaced]
+            feature.evidence_families=families
+            composite['superseded_bright_band_families']=replaced
+        if config.compressed_layers_enabled:
+            from .compressed_layers import compressed_identity_context
+            context=compressed_identity_context(track,tracks,config)
+            track.local_evidence['compressed_identity']=context
+            if context['verified'] and not {'background','paper_support'} & set(families):
+                # 弱纹使用实测邻近周期的局部模板；未知条带不反对存在。
+                # 背景、低纸面支持等证据仍保留，也不撤销显式 absent。
+                families=[v for v in families if v not in {'template','negative_shape','strip_consistency','competition'}]
+                feature.evidence_families=families
+                context['used_for_identity']=True
+            else:context['used_for_identity']=False
+        feature.complete_identity_strips = len(aligned[track.track_id].raw_by_strip)
+        if feature.complete_identity_strips == 0:
+            # 越界后返回的零数组仅供绘图占位，不能作为黑背景或模板异常证据。
+            families = []
+            feature.evidence_families = []
+            feature.template_status = 'unobservable'
+            feature.suspicious_reasons = ['identity_window_outside_image']
         feature.false_family, feature.proposed_decision = conservative_identity_decision(
             families, feature.needs_final_verification, feature.identity_z_score, config)
+        if config.evidence_model:
+            proof=track.local_evidence.get('paper_body',{})
+            if proof.get('state')=='absent' and not (config.composite_layers_enabled and composite.get('verified')):
+                feature.false_family='MEASURED_NON_PAPER'
+                feature.proposed_decision='REJECT_MEASURED_NON_PAPER'
+            # 局部亮带不再撤销背景/纹理拒绝；独立 RAW 连通纸身仍可在终判保护。
+
+    # Compute only after all legacy template/statistics/decisions are finalized.
+    # Endpoints cannot change reference membership or ordinary track features.
+    if config.endpoint_identity_v2_enabled:
+        for track in tracks:
+            features[track.track_id].endpoint_identity = endpoint_identity_v2(
+                track, features[track.track_id], raw_profiles, y_offset, raw_mask, config)
+
+    if (config.partial_endpoint_identity_enabled or config.recovered_raw_body_guard_enabled
+            or config.foreground_endpoint_identity_enabled):
+        from .partial_endpoint import partial_endpoint_evidence
+        for track in tracks:
+            features[track.track_id].partial_endpoint = partial_endpoint_evidence(
+                track, spacing_by_id[track.track_id], raw_profiles, y_offset,
+                config.gradient_polarity, config)
 
     debug = {
         "primary_polarity": config.gradient_polarity,
@@ -591,7 +736,7 @@ def analyze_track_identity(tracks: list[PaperEdgeTrack], raw_profiles: np.ndarra
     return features, {"debug": debug, "artifacts": artifacts}
 
 
-REJECT_DECISIONS = {"REJECT_BACKGROUND", "REJECT_SECONDARY_TEXTURE", "REJECT_DUPLICATE"}
+REJECT_DECISIONS = {"REJECT_BACKGROUND", "REJECT_SECONDARY_TEXTURE", "REJECT_DUPLICATE", "REJECT_MEASURED_NON_PAPER"}
 
 
 def _boundary_morphology_score(feature: TrackIdentityFeatures) -> float:
@@ -661,10 +806,62 @@ def apply_final_track_verifier(tracks: list[PaperEdgeTrack], features: dict[str,
         for track in ordered:
             feature = features[track.track_id]
             proof = track.local_evidence.get('raw_body_confirmation', {})
+            # Preserve the old independently paired RAW confirmation rule.
+            # paper_body.verified alone is not independent layer identity.
             if (track.track_id in proposed_ids and proof.get('supported') and
                     feature.false_family == 'SECONDARY_TEXTURE' and track.raw_mask_state != 'INVALID'):
                 proposed_ids.remove(track.track_id)
                 raw_conflicts.append(track.track_id)
+    legacy_proposed_ids = set(proposed_ids)
+    legacy_raw_conflicts = list(raw_conflicts)
+    endpoint_records = []
+    if config.endpoint_identity_v2_enabled:
+        for track in ordered:
+            endpoint = getattr(features[track.track_id], 'endpoint_identity', None) or {}
+            if not endpoint.get('is_endpoint'):
+                continue
+            if endpoint['decision'] == 'REJECT_ENDPOINT_V2':
+                proposed_ids.add(track.track_id)
+            else:
+                proposed_ids.discard(track.track_id)
+            endpoint_records.append({'track_id':track.track_id, 'center_y':track.center_y, **endpoint,
+                                     'legacy_terminal_rejected':track.track_id in legacy_proposed_ids})
+        raw_conflicts = [tid for tid in raw_conflicts if tid not in proposed_ids]
+    partial_kept = []
+    foreground_kept = []
+    component_kept = []
+    if config.isolated_raw_component_enabled:
+        for track in tracks:
+            proof = track.local_evidence.get('isolated_raw_component', {})
+            if proof.get('verified'):
+                proposed_ids.discard(track.track_id)
+                component_kept.append(track.track_id)
+    if config.partial_endpoint_identity_enabled:
+        for track in tracks:
+            feature = features[track.track_id]
+            proof = feature.partial_endpoint or {}
+            if (track.track_id in proposed_ids and proof.get('confirmed') and
+                    feature.false_family == 'BACKGROUND_FALSE_EDGE' and
+                    'competition' not in (feature.evidence_families or [])):
+                proposed_ids.discard(track.track_id)
+                partial_kept.append(track.track_id)
+    if config.foreground_endpoint_identity_enabled:
+        from .foreground_endpoint import verified_foreground_endpoint
+        for track in tracks:
+            feature=features[track.track_id]
+            polarity=(feature.partial_endpoint or {}).get('polarity')
+            outer=(track is ordered[0] if polarity=='positive' else track is ordered[-1] if polarity=='negative' else False)
+            if track.track_id in proposed_ids and verified_foreground_endpoint(track,feature,outer,config):
+                proposed_ids.discard(track.track_id)
+                foreground_kept.append(track.track_id)
+    measured_background=[]
+    if config.evidence_model:
+        # 实测无纸是终判事实，旧的端部/模板保护开关不能再次把它复活。
+        # 独立 RAW 连通纸身证据与之冲突时保留并明确记录，供复核。
+        for track in tracks:
+            if (track.local_evidence.get('paper_body',{}).get('state')=='absent'
+                    and not track.local_evidence.get('isolated_raw_component',{}).get('verified')):
+                proposed_ids.add(track.track_id);measured_background.append(track.track_id)
     proposed = [track for track in tracks if track.track_id in proposed_ids]
     rejected = [] if config.final_track_verifier_shadow_mode else proposed
     rejected_ids = {track.track_id for track in rejected}
@@ -672,12 +869,14 @@ def apply_final_track_verifier(tracks: list[PaperEdgeTrack], features: dict[str,
     records = []
     for index, track in enumerate(ordered):
         feature = features[track.track_id]
+        endpoint = getattr(feature, 'endpoint_identity', None) or {}
         records.append({"track_id": track.track_id, "center_y": track.center_y,
                         "identity_score": feature.identity_score,
                         "identity_z_score": feature.identity_z_score,
                         "false_family": feature.false_family,
                         "proposed_decision": feature.proposed_decision,
-                        "terminal_decision": ("KEEP_RAW_BODY_CONFLICT_REVIEW" if track.track_id in raw_conflicts else
+                        "terminal_decision": ('REJECT_MEASURED_NON_PAPER' if track.track_id in measured_background else 'KEEP_MEASURED_FOREGROUND_ENDPOINT' if track.track_id in foreground_kept else 'KEEP_MEASURED_RAW_COMPONENT' if track.track_id in component_kept else 'KEEP_MEASURED_PARTIAL_ENDPOINT' if track.track_id in partial_kept else endpoint['decision'] if config.endpoint_identity_v2_enabled and endpoint.get('is_endpoint') else
+                            "KEEP_RAW_BODY_CONFLICT_REVIEW" if track.track_id in raw_conflicts else
                             "REJECT_PAIR_COMPETITOR" if any(
                             row["rejected_competitor_track_id"] == track.track_id
                             for row in pair_adjudications) else
@@ -697,7 +896,20 @@ def apply_final_track_verifier(tracks: list[PaperEdgeTrack], features: dict[str,
         "applied_reject_track_ids": [track.track_id for track in rejected],
         "pair_adjudications": pair_adjudications,
         "raw_body_conflicts_retained": raw_conflicts,
+        "legacy_terminal": {
+            'rejected_track_ids': sorted(legacy_proposed_ids),
+            'kept_track_ids': [t.track_id for t in tracks if t.track_id not in legacy_proposed_ids],
+            'count': len(tracks) if config.final_track_verifier_shadow_mode else len(tracks)-len(legacy_proposed_ids),
+            'raw_body_conflicts_retained': legacy_raw_conflicts},
+        "endpoint_identity_v2": {
+            'enabled': config.endpoint_identity_v2_enabled,
+            'tracks': endpoint_records,
+            'endpoint_count': len(endpoint_records),
+            'internal_decisions_unchanged': all((t.track_id in proposed_ids) == (t.track_id in legacy_proposed_ids)
+                for t in tracks if not (getattr(features[t.track_id], 'endpoint_identity', None) or {}).get('is_endpoint'))},
         "track_decisions": records,
+        "partial_endpoint_kept": partial_kept,
+        "foreground_endpoint_kept": foreground_kept,
         "recovery_after_verifier": False,
     }
 
@@ -708,4 +920,5 @@ __all__ = [
     "build_edge_template", "select_reference_track_ids", "analyze_track_identity",
     "background_false_evidence", "conservative_identity_decision",
     "apply_final_track_verifier", "REJECT_DECISIONS",
+    "endpoint_identity_v2",
 ]

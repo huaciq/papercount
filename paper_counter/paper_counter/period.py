@@ -25,6 +25,8 @@ def estimate_period(profile: np.ndarray, min_period: int, max_period: int,
     limit = min(max_period, len(x) - 2)
     if energy <= epsilon or limit < min_period:
         return None, 0.0, np.zeros(min(len(x), max_period + 2))
+    # ACF(k) = sum_y x(y)x(y+k) / sum_y x(y)^2；重复纸边会在其间距处相关。
+    # 这里只给搜索/关联提供尺度，不能据此按“纸堆高度 / 周期”生成张数。
     corr = correlate(x, x, mode="full", method="fft")[len(x) - 1:len(x) + limit + 1] / energy
     indices, _ = find_peaks(corr)
     indices = indices[(indices >= min_period) & (indices <= limit)]

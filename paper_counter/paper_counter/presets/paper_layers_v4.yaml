@@ -1,0 +1,18 @@
+# 新纸身模型的显式入口；是否成为默认方案以全量回归结果为准。
+profile: paper_layers_v4
+input:
+  roi: null
+  gradient_polarity: positive
+signal:
+  num_strips: 12
+  min_period: 5
+  max_period: 50
+  illumination_sigma: 15.0
+association:
+  orientation_window_rows: 96
+  orientation_max_slope: 0.6
+decision:
+  final_track_verifier_enabled: true
+display:
+  display_max_height: 4000
+  display_max_width: 1600

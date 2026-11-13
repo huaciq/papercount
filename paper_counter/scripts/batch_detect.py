@@ -1,126 +1,131 @@
-"""Batch existing single-image CLI with isolated outputs and incremental summaries."""
+"""Batch tracks or regions with frozen source/config and separate image/audit output."""
 from __future__ import annotations
-import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
-import json
-import os
+from concurrent.futures import ThreadPoolExecutor,as_completed
+from datetime import datetime,timezone,timedelta
 from pathlib import Path
-import shutil
-import subprocess
-import sys
-import time
+import argparse,hashlib,json,os,shutil,subprocess,sys
 
-ROOT = Path(__file__).resolve().parents[1]
-EXTENSIONS = {".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
+ROOT=Path(__file__).resolve().parents[1]
+DATA=ROOT.parent/'数据'
+EXTENSIONS={'.bmp','.png','.jpg','.jpeg','.tif','.tiff','.webp'}
 
 
-def run_one(image: Path, input_dir: Path, output: Path, config: Path, rotate_ccw: bool, ground_truth: Path | None = None) -> dict:
-    """Keep processing other images even if this image fails."""
-    relative = image.relative_to(input_dir)
-    target = output / "images" / relative.parent / relative.name
-    target.mkdir(parents=True, exist_ok=False)
-    started = time.perf_counter()
-    row = {"image": relative.as_posix(), "output": target.relative_to(output).as_posix(),
-           "rotation_ccw_degrees": 90 if rotate_ccw else 0}
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write(path,value):
+    temporary=path.with_suffix(path.suffix+'.tmp')
+    temporary.write_text(json.dumps(value,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
+    temporary.replace(path)
+
+
+def run_one(item,output,rotate,full,ground_truth):
+    path=Path(item['path']);key=item['image'];target=output/'audit/details'/key
+    target.mkdir(parents=True,exist_ok=True)
+    command=[sys.executable,str(output/'audit/source/main.py'),
+             '--image',str(path),'--config',str(output/'audit/config.yaml'),'--output',str(target)]
+    if rotate:command.append('--rotate-ccw')
+    if full:command.append('--full-debug')
+    if ground_truth:command.extend(['--ground-truth',str(ground_truth)])
+    row=dict(image=key,input_sha256=item['sha256'])
     try:
-        with (target / "cli.log").open("w", encoding="utf-8") as stream:
-            command = [sys.executable, "-X", "utf8=0", str(ROOT / "main.py"),
-                "--image", str(image), "--config", str(config), "--output", str(target)]
-            if rotate_ccw:
-                command.append("--rotate-ccw")
-            if ground_truth is not None:
-                command.extend(["--ground-truth", str(ground_truth)])
-            process = subprocess.run(command,
-                stdout=stream, stderr=subprocess.STDOUT,
-                env={**os.environ, "PYTHONIOENCODING": "utf-8"})
-        if process.returncode != 0:
-            raise RuntimeError(f"CLI exit code {process.returncode}; see cli.log")
-        with (target / "debug_info.json").open(encoding="utf-8") as stream:
-            debug = json.load(stream)
-        row.update(status=debug["status"], count=debug["count"],
-            detected=len(debug["detected_peaks"]), recovered=len(debug["repaired_peaks"]),
-            rejected=len(debug.get("rejected_tracks", [])), period=debug["period"],
-            local_period=debug.get("median_local_period"), confidence=debug["confidence"],
-            active_roi=debug.get("active_stack_roi", debug["roi"]),
-            polarity=debug["gradient_polarity"], warnings=debug.get("warnings", []),
-            suspicious_gaps=len(debug.get("spacing_warnings", [])))
-        row.update(sequence_rescued=len(debug.get("sequence_rescued_tracks", [])),
-                   sequence_suppressed=len(debug.get("sequence_suppressed_tracks", [])))
-        reg = debug.get("regularity", {})
-        row.update(regular_region_ratio=reg.get("region_ratios", {}).get("REGULAR", 0.0),
-                   mixed_region_ratio=reg.get("region_ratios", {}).get("MIXED", 0.0),
-                   irregular_region_ratio=reg.get("region_ratios", {}).get("IRREGULAR", 0.0),
-                   period_assisted_recoveries=len(debug.get("regular_period_assisted_recoveries", [])),
-                   geometry_only_recoveries=len(debug.get("geometry_only_recoveries", [])),
-                   strong_suppressions=sum(1 for t in debug.get("sequence_suppressed_tracks", []) if t.get("reason") == "sequence_suppressed_short_gap"),
-                   unresolved_regular_gaps=len(debug.get("unresolved_regular_gaps", [])),
-                   initial_stack_roi=debug.get("raw_stack_mask", {}).get("thresholds", {}).get("initial_top"),
-                   refined_stack_roi=debug.get("mask_refinement", {}).get("refined_top"),
-                   invalid_selected=debug.get("invalid_selected_track_count", 0),
-                   margin_selected=len(debug.get("margin_selected_track_ids", [])))
-        if "ground_truth" in debug:
-            row["ground_truth"] = debug["ground_truth"]
-    except Exception as error:
-        row.update(status="error", count=None, error=str(error))
-    row["elapsed_seconds"] = round(time.perf_counter() - started, 2)
+        if sha(path)!=item['sha256']:raise RuntimeError('Input changed before detection')
+        with (target/'cli.log').open('w',encoding='utf-8') as log:
+            process=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,
+                                   env={**os.environ,'PYTHONIOENCODING':'utf-8'})
+        if process.returncode:raise RuntimeError(f'CLI exit {process.returncode}; see audit/details/{key}/cli.log')
+        d=json.loads((target/'debug_info.json').read_text(encoding='utf-8'))
+        algorithm='regions' if d['algorithm']=='narrow_regions' else 'tracks'
+        geometry={}
+        if algorithm=='regions':
+            boxes=json.loads((target/'detection_boxes.json').read_text(encoding='utf-8'))['boxes']
+            ordered=sorted(boxes,key=lambda b:b['detection_xyxy'][1])
+            pairs=[dict(box_a=a['number'],box_b=b['number'],height=min(a['detection_xyxy'][3],b['detection_xyxy'][3])-max(a['detection_xyxy'][1],b['detection_xyxy'][1]))
+                   for i,a in enumerate(ordered) for b in ordered[i+1:]
+                   if min(a['detection_xyxy'][3],b['detection_xyxy'][3])>max(a['detection_xyxy'][1],b['detection_xyxy'][1])+1e-8]
+            geometry=dict(positive_height=all(b['detection_xyxy'][3]>b['detection_xyxy'][1] for b in boxes),
+                          count_matches_boxes=len(boxes)==d['count'],nonoverlap=not pairs,overlap_pairs=pairs)
+            write(target/'batch_geometry_validation.json',geometry)
+        destination=output/'images'/Path(key).parent/(Path(key).name+'_result.png')
+        destination.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(target/'result_overlay.png',destination)
+        if sha(path)!=item['sha256']:raise RuntimeError('Input changed during detection')
+        row.update(status='exported',algorithm=algorithm,count=d['count'],detector_status=d['status'],
+                   geometry=geometry,result_image=destination.relative_to(output).as_posix())
+    except Exception as error:row.update(status='error',error=str(error))
     return row
 
 
-def save_summary(output: Path, rows: list[dict], total: int, rotate_ccw: bool = False) -> None:
-    """Write both machine-readable results and a clickable report."""
-    ordered = sorted(rows, key=lambda row: row["image"])
-    with (output / "summary.json").open("w", encoding="utf-8") as stream:
-        json.dump({"total_images": total, "completed": len(rows), "results": ordered},
-                  stream, ensure_ascii=False, indent=2, allow_nan=False)
-    lines = ["# 批量检测结果", "", f"已处理 {len(rows)} / {total} 张图像。", "",
-        ("输入图像先逆时针旋转 90°。" if rotate_ccw else "输入图像未旋转。") + "统一使用本目录 default.yaml 配置检测，没有按单图调参。证据不足时的 0 不表示没有纸。",
-        "Confidence 是算法一致性评分，不是计数准确率。", "",
-        "| 图像 | 计数 | 直接检测 | 恢复 | Regular | Irregular | 周期 px | Confidence | 状态 | 输出 |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---|---|"]
-    for row in ordered:
-        period = f"{row['period']:.2f}" if row.get("period") is not None else "—"
-        confidence = f"{row['confidence']:.3f}" if "confidence" in row else "—"
-        directory = row["output"]
-        links = f"[标注图](<{directory}/result_overlay.png>) · [调试数据](<{directory}/debug_info.json>)" if row["status"] != "error" else f"[错误日志](<{directory}/cli.log>)"
-        lines.append(f"| {row['image']} | {row.get('count', '—')} | {row.get('detected', '—')} | {row.get('recovered', '—')} | {row.get('regular_region_ratio', 0):.3f} | {row.get('irregular_region_ratio', 0):.3f} | {period} | {confidence} | {row['status']} | {links} |")
-    (output / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+def summarize(output,rows,total):
+    rows=sorted(rows,key=lambda r:r['image']);write(output/'audit/results.json',rows)
+    lines=['# 批量检测结果','',f'成功导出 {sum(r["status"]=="exported" for r in rows)}/{total} 张。',
+           'images/保存结果图；audit/保存配置、源码快照、日志和坐标。',
+           '导出成功不代表计数或几何检查通过。重叠问题单独记录，导出时不修改算法原始结果。','',
+           '| 图片 | 算法 | 计数 | 重叠框对数 | 状态 |','| --- | --- | ---: | ---: | --- |']
+    for r in rows:
+        lines.append(f'| {r["image"]} | {r.get("algorithm","—")} | {r.get("count","—")} | {len(r.get("geometry",{}).get("overlap_pairs",[]))} | {r["status"]} |')
+    (output/'REPORT.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--config", type=Path, default=ROOT / "configs" / "default.yaml")
-    parser.add_argument("--workers", type=int, default=2)
-    parser.add_argument("--rotate-ccw", action="store_true", help="Rotate every input counter-clockwise 90 degrees")
-    parser.add_argument("--ground-truth", type=Path, default=None, help="Optional ground_truth.json")
-    parser.add_argument("--output-root", type=Path, default=ROOT / "output",
-                        help="Parent directory for timestamped batch outputs")
-    args = parser.parse_args()
-    input_dir = args.input.resolve()
-    if not input_dir.is_dir() or args.workers < 1:
-        parser.error("Input must be a directory and workers must be positive")
-    images = sorted(p for p in input_dir.rglob("*") if p.is_file() and p.suffix.lower() in EXTENSIONS)
-    if not images:
-        parser.error("No supported images found")
-    output_root = args.output_root.resolve()
-    output_root.mkdir(parents=True, exist_ok=True)
-    output = output_root / ("batch_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
-    output.mkdir(exist_ok=False)
-    config = output / "default.yaml"
-    shutil.copy2(args.config, config)
-    rows = []
-    print("OUTPUT:", output, flush=True)
-    save_summary(output, rows, len(images), args.rotate_ccw)
+def main(argv=None):
+    parser=argparse.ArgumentParser(description=__doc__)
+    group=parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--input',type=Path,help='Input folder, searched recursively')
+    group.add_argument('--datasets',nargs='+',help='Folders relative to ../数据')
+    parser.add_argument('--extra-image',action='append',default=[],help='Additional image relative to ../数据')
+    parser.add_argument('--config',type=Path,default=ROOT/'configs/default.yaml')
+    parser.add_argument('--workers',type=int,default=2)
+    parser.add_argument('--rotate-ccw',action='store_true')
+    parser.add_argument('--full-debug',action='store_true')
+    parser.add_argument('--ground-truth',type=Path)
+    parser.add_argument('--output',type=Path,help='New result folder; must not already exist')
+    parser.add_argument('--output-root',type=Path,default=ROOT/'output')
+    args=parser.parse_args(argv)
+    if args.workers<1:parser.error('--workers must be positive')
+    base=args.input.resolve() if args.input else DATA.resolve()
+    folders=[base] if args.input else [(DATA/name).resolve() for name in args.datasets]
+    if any(not p.is_dir() for p in folders):parser.error('Every input folder must exist')
+    if not args.input and any(base not in p.parents and p!=base for p in folders):parser.error('Use --input for folders outside ../数据')
+    paths={p for folder in folders for p in folder.rglob('*') if p.is_file() and p.suffix.lower() in EXTENSIONS}
+    paths.update((DATA/name).resolve() for name in args.extra_image)
+    if not paths or any(not p.is_file() or p.suffix.lower() not in EXTENSIONS for p in paths):parser.error('No images or invalid --extra-image')
+    sys.path.insert(0,str(ROOT))
+    from paper_counter import CounterConfig
+    import yaml
+    cfg=CounterConfig.from_yaml(args.config.resolve())
+    stamp=datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d_%H%M%S_%f')
+    output=args.output.resolve() if args.output else args.output_root.resolve()/f'batch_{cfg.algorithm}_{stamp}'
+    output.mkdir(parents=True,exist_ok=False);audit=output/'audit';audit.mkdir()
+    source=audit/'source';source.mkdir()
+    shutil.copytree(ROOT/'paper_counter',source/'paper_counter',ignore=shutil.ignore_patterns('__pycache__'))
+    shutil.copy2(ROOT/'main.py',source/'main.py')
+    (audit/'config.yaml').write_text(yaml.safe_dump(cfg.to_dict(),allow_unicode=True,sort_keys=False),encoding='utf-8')
+    shutil.copy2(Path(__file__),audit/'batch_source.py')
+    inventory=[dict(image=p.relative_to(base).as_posix(),path=str(p),sha256=sha(p)) for p in sorted(paths)]
+    write(audit/'inventory.json',inventory);rows=[];summarize(output,rows,len(paths))
+    print('OUTPUT: '+str(output),flush=True)
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        jobs = [pool.submit(run_one, path, input_dir, output, config, args.rotate_ccw, args.ground_truth) for path in images]
+        jobs=[pool.submit(run_one,r,output,args.rotate_ccw,args.full_debug,args.ground_truth.resolve() if args.ground_truth else None) for r in inventory]
         for job in as_completed(jobs):
-            row = job.result()
-            rows.append(row)
-            save_summary(output, rows, len(images), args.rotate_ccw)
-            print(json.dumps({"progress": f"{len(rows)}/{len(images)}", **row}, ensure_ascii=True), flush=True)
-    print("DONE:", output, flush=True)
+            row=job.result();rows.append(row);summarize(output,rows,len(paths))
+            print(json.dumps(dict(progress=f'{len(rows)}/{len(paths)}',**row),ensure_ascii=True),flush=True)
+    snapshot={p.relative_to(source).as_posix():sha(p) for p in source.rglob('*') if p.is_file() and '__pycache__' not in p.parts}
+    unchanged=all((ROOT/name).exists() and sha(ROOT/name)==digest for name,digest in snapshot.items())
+    import cv2
+    import numpy as np
+    images=list((output/'images').rglob('*.png')) if (output/'images').exists() else []
+    for path in images:
+        if cv2.imdecode(np.fromfile(path,dtype=np.uint8),cv2.IMREAD_UNCHANGED) is None:
+            raise RuntimeError(f'Cannot decode result image: {path}')
+    verification=dict(total=len(paths),exported=sum(r['status']=='exported' for r in rows),failed=sum(r['status']=='error' for r in rows),
+        algorithm=cfg.algorithm,source_matches_current=unchanged,source_hashes=snapshot,pngs_verified=len(images),
+        inputs_unchanged=all(sha(Path(r['path']))==r['sha256'] for r in inventory),
+        images_with_overlap=sum(bool(r.get('geometry',{}).get('overlap_pairs')) for r in rows))
+    write(audit/'verification.json',verification)
+    if not unchanged:raise RuntimeError('Source changed while running; results refer to frozen snapshot')
+    return 1 if verification['failed'] else 0
 
 
-if __name__ == "__main__":
-    main()
+if __name__=='__main__':
+    raise SystemExit(main())

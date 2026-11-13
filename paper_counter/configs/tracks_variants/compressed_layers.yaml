@@ -1,0 +1,4 @@
+# 压实弱层纹分支；稳定默认和上一轮 v4 配置保持不变。
+profile: paper_layers_v4
+signal:
+  compressed_layers_enabled: true
