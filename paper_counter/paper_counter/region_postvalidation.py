@@ -40,14 +40,16 @@ def _robust_reference(heights: np.ndarray) -> tuple[float, float]:
     return median, max(mad, 0.12 * max(median, 1.0), 1.0)
 
 
-def identify_suspicious_boxes(boxes: List[dict], debug: dict) -> List[dict]:
+def identify_suspicious_boxes(boxes: List[dict], debug: dict, observation: dict | None = None) -> List[dict]:
     """Mark adaptive thickness outliers without deleting them."""
     if len(boxes) < 3:
         return []
     heights = np.asarray([_height(box) for box in boxes], dtype=np.float32)
     reference, scale = _robust_reference(heights)
     region = debug.get("region_detection") or {}
-    profile = _profile(region.get("three_strip_observation") or {})
+    # Serialized diagnostics omit raw arrays. Read the live observation;
+    # otherwise every boundary is silently assessed against a missing profile.
+    profile = _profile(observation or region.get("three_strip_observation") or {})
     suspicious = []
     for index, box in enumerate(boxes):
         height = float(heights[index])
@@ -144,7 +146,7 @@ def validate_box_sequence(boxes: List[dict], bands: List[dict],
                           observation: dict, debug: dict) -> Tuple[List[dict], dict]:
     if not boxes:
         return boxes, dict(enabled=False, reason="no_boxes", corrections_applied=[])
-    suspicious = identify_suspicious_boxes(boxes, debug)
+    suspicious = identify_suspicious_boxes(boxes, debug, observation)
     corrected = correct_suspicious_boxes(boxes, suspicious, bands, observation)
     result = dict(enabled=True, original_count=len(boxes), final_count=len(corrected["boxes"]),
                   suspicious_boxes=suspicious, corrections_applied=corrected["corrections"],

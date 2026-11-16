@@ -1,11 +1,17 @@
 # 纸张计数：regions 与 tracks
 
+材料策略现通过统一引擎和配方调度。瓦楞纸推荐 `--recipe corrugated_side_v1`；
+普通区域与原轨迹分别使用 `regions_generic_v1`、`tracks_existing_v1`。
+旧配置、旧预设继续兼容。API、目录和新增策略方式见 [流水线迁移说明](docs/PIPELINES.md)。
+两人分支协作、首次克隆及开发环境说明见 [协作指南](docs/COLLABORATION.md)。
+
 项目现在只提供两套算法。`legacy`、`narrow` 已移除，传入这些名称会明确报错。
 历史实验脚本、旧说明和重复源码已备份到项目外；原始数据不修改，历史检测结果保留在 `output/`。
 
 | 算法 | 配置 | 用途与输出 |
 | --- | --- | --- |
 | `regions` | `configs/regions.yaml` | 旋正、缩放、约225像素窄区、3条带灰度观测、纸身分段，输出矩形框 |
+| `corrugated`（regions 预设） | `configs/corrugated.yaml` | 瓦楞纸：实测横向缝隙分段、空腔筋检查、背景与外侧残片排除 |
 | `tracks` | `configs/default.yaml` | 多条带梯度观测、轨迹关联、恢复与验证，输出轨迹 |
 | `tracks_preprocessed` | `configs/tracks_preprocessed.yaml` | 在 tracks 前端增加横向抑噪、暗缝增强和终端近重复清理；可选自动旋正 |
 

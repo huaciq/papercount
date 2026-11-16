@@ -24,7 +24,7 @@ def run_one(item,output,rotate,full,ground_truth):
     path=Path(item['path']);key=item['image'];target=output/'audit/details'/key
     target.mkdir(parents=True,exist_ok=True)
     command=[sys.executable,str(output/'audit/source/main.py'),
-             '--image',str(path),'--config',str(output/'audit/config.yaml'),'--output',str(target)]
+             '--image',str(path),'--recipe',str(output/'audit/recipe.yaml'),'--output',str(target)]
     if rotate:command.append('--rotate-ccw')
     if full:command.append('--full-debug')
     if ground_truth:command.extend(['--ground-truth',str(ground_truth)])
@@ -52,6 +52,7 @@ def run_one(item,output,rotate,full,ground_truth):
         shutil.copy2(target/'result_overlay.png',destination)
         if sha(path)!=item['sha256']:raise RuntimeError('Input changed during detection')
         row.update(status='exported',algorithm=algorithm,count=d['count'],detector_status=d['status'],
+                   pipeline=d.get('pipeline',{}).get('id'),recipe_id=d.get('pipeline',{}).get('recipe_id'),
                    geometry=geometry,result_image=destination.relative_to(output).as_posix())
     except Exception as error:row.update(status='error',error=str(error))
     return row
@@ -74,7 +75,9 @@ def main(argv=None):
     group.add_argument('--input',type=Path,help='Input folder, searched recursively')
     group.add_argument('--datasets',nargs='+',help='Folders relative to ../数据')
     parser.add_argument('--extra-image',action='append',default=[],help='Additional image relative to ../数据')
-    parser.add_argument('--config',type=Path,default=ROOT/'configs/default.yaml')
+    selection=parser.add_mutually_exclusive_group()
+    selection.add_argument('--config',type=Path,default=ROOT/'configs/default.yaml')
+    selection.add_argument('--recipe',help='Versioned recipe name or YAML path')
     parser.add_argument('--workers',type=int,default=2)
     parser.add_argument('--rotate-ccw',action='store_true')
     parser.add_argument('--full-debug',action='store_true')
@@ -91,9 +94,10 @@ def main(argv=None):
     paths.update((DATA/name).resolve() for name in args.extra_image)
     if not paths or any(not p.is_file() or p.suffix.lower() not in EXTENSIONS for p in paths):parser.error('No images or invalid --extra-image')
     sys.path.insert(0,str(ROOT))
-    from paper_counter import CounterConfig
+    from paper_counter.recipe import Recipe,load_config_or_recipe
     import yaml
-    cfg=CounterConfig.from_yaml(args.config.resolve())
+    recipe=Recipe.load(args.recipe) if args.recipe else load_config_or_recipe(args.config.resolve())
+    cfg=recipe.to_counter_config()
     stamp=datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d_%H%M%S_%f')
     output=args.output.resolve() if args.output else args.output_root.resolve()/f'batch_{cfg.algorithm}_{stamp}'
     output.mkdir(parents=True,exist_ok=False);audit=output/'audit';audit.mkdir()
@@ -101,6 +105,7 @@ def main(argv=None):
     shutil.copytree(ROOT/'paper_counter',source/'paper_counter',ignore=shutil.ignore_patterns('__pycache__'))
     shutil.copy2(ROOT/'main.py',source/'main.py')
     (audit/'config.yaml').write_text(yaml.safe_dump(cfg.to_dict(),allow_unicode=True,sort_keys=False),encoding='utf-8')
+    (audit/'recipe.yaml').write_text(yaml.safe_dump(recipe.to_dict(),allow_unicode=True,sort_keys=False),encoding='utf-8')
     shutil.copy2(Path(__file__),audit/'batch_source.py')
     inventory=[dict(image=p.relative_to(base).as_posix(),path=str(p),sha256=sha(p)) for p in sorted(paths)]
     write(audit/'inventory.json',inventory);rows=[];summarize(output,rows,len(paths))
@@ -119,7 +124,8 @@ def main(argv=None):
         if cv2.imdecode(np.fromfile(path,dtype=np.uint8),cv2.IMREAD_UNCHANGED) is None:
             raise RuntimeError(f'Cannot decode result image: {path}')
     verification=dict(total=len(paths),exported=sum(r['status']=='exported' for r in rows),failed=sum(r['status']=='error' for r in rows),
-        algorithm=cfg.algorithm,source_matches_current=unchanged,source_hashes=snapshot,pngs_verified=len(images),
+        algorithm=cfg.algorithm,pipeline=recipe.pipeline,recipe_id=recipe.recipe_id,
+        source_matches_current=unchanged,source_hashes=snapshot,pngs_verified=len(images),
         inputs_unchanged=all(sha(Path(r['path']))==r['sha256'] for r in inventory),
         images_with_overlap=sum(bool(r.get('geometry',{}).get('overlap_pairs')) for r in rows))
     write(audit/'verification.json',verification)

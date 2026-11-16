@@ -1,0 +1,18 @@
+schema_version: 1
+recipe_id: corrugated_side_v1
+material_family: corrugated
+count_unit: board
+capture_profile: unspecified_v1
+pipeline: corrugated_body_v1
+parameters:
+  preparation:
+    automatic_geometry: true
+    roi_policy: bright_core_with_dim_edges
+    target_spacing_px: 14.0
+    sampling_width_px: 225
+  observation:
+    illumination_sigma: 15.0
+    epsilon: 1.0e-6
+    max_period_px: 50
+runtime:
+  export: compact

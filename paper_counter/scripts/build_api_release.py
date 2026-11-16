@@ -11,7 +11,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     os.chdir(root)
     # Keep the distributed configurations identical to the current explicit files.
-    for name in ("default.yaml", "paper_layers_v4.yaml", "regions.yaml", "tracks_preprocessed.yaml"):
+    for name in ("default.yaml", "paper_layers_v4.yaml", "regions.yaml", "tracks_preprocessed.yaml", "corrugated.yaml"):
         config_path = root / "configs" / name
         if config_path.exists():
             (root / "paper_counter" / "presets" / name).write_bytes(config_path.read_bytes())
@@ -21,6 +21,7 @@ def main():
     archive = dist / "paper_counter_api_0.1.0.zip"
     source_files = sorted((root / "paper_counter").rglob("*.py"))
     source_files += sorted((root / "paper_counter" / "presets").glob("*.yaml"))
+    source_files += sorted((root / "paper_counter" / "recipes").rglob("*.yaml"))
     source_files += [root / "pyproject.toml", root / "API_README.md", root / "requirements.txt",
                      root / "examples" / "example.py", Path(__file__).resolve()]
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:

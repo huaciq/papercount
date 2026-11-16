@@ -25,6 +25,7 @@ def main(argv: list[str] | None = None) -> int:
         "--all", action="store_true",
         help="输出全部中间过程图和诊断数据；默认只输出检测图、坐标及基本数据",
     )
+    parser.add_argument('--recipe',help='Versioned recipe name or YAML path; replaces CONFIG_PATH')
     args = parser.parse_args(argv)
 
     input_path = Path(INPUT_PATH).resolve()
@@ -55,8 +56,8 @@ def main(argv: list[str] | None = None) -> int:
         from paper_counter.compact_output import save_compact
         from paper_counter.visualization import save_debug
 
-        detector = PaperDetector(config=CONFIG_PATH)
-        exporter = save_debug if args.all else save_compact
+        detector = PaperDetector(recipe=args.recipe) if args.recipe else PaperDetector(config=CONFIG_PATH)
+        exporter = save_debug if args.all or detector.recipe.runtime.export=='full_debug' else save_compact
         target.mkdir(parents=True, exist_ok=True)
     except (OSError, ValueError, TypeError) as error:
         print(f"错误：{error}", file=sys.stderr)

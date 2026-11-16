@@ -6,18 +6,21 @@ import sys
 from pathlib import Path
 import numpy as np
 
-from paper_counter import CounterConfig, PaperCounter
 from paper_counter.preprocessing import read_image
 from paper_counter.visualization import save_debug
 from paper_counter.compact_output import save_compact
 from paper_counter.ground_truth import load_ground_truth, evaluate_result
+from paper_counter.recipe import Recipe,load_config_or_recipe
+from paper_counter.engine import DetectionEngine
 
 
 def main() -> int:
     """Load one image, run the counter and save all diagnostics."""
     parser = argparse.ArgumentParser(description="Paper counting: tracks or regions, selected by --config")
     parser.add_argument("--image", type=Path, required=True)
-    parser.add_argument("--config", type=Path, default=Path(__file__).parent / "configs" / "default.yaml")
+    selection=parser.add_mutually_exclusive_group()
+    selection.add_argument("--config", type=Path, default=Path(__file__).parent / "configs" / "default.yaml")
+    selection.add_argument("--recipe",help="Versioned recipe name or YAML path")
     parser.add_argument("--output", type=Path, default=Path(__file__).parent / "output" / "current")
     parser.add_argument("--full-debug", action="store_true", help="Export all stage diagnostics; default exports only final overlay and compact JSON")
     parser.add_argument("--rotate-ccw", action="store_true", help="Rotate input counter-clockwise 90 degrees before detection")
@@ -26,7 +29,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         # CLI 使用完整 YAML 参数；CounterConfig() 的基础默认值并不等于当前生产方案。
-        config = CounterConfig.from_yaml(args.config)
+        recipe=Recipe.load(args.recipe) if args.recipe else load_config_or_recipe(args.config)
+        config = recipe.to_counter_config()
         image = read_image(args.image)
         original_shape = list(image.shape)
         if args.rotate_ccw:
@@ -39,7 +43,7 @@ def main() -> int:
             from paper_counter.dual_polarity import process_dual
             result, positive_result, _ = process_dual(image, config)
         else:
-            result = PaperCounter(config).process(image)
+            result = DetectionEngine(recipe).process(image,image_id=str(args.image.resolve()))
         result.debug_info["input_image"] = str(args.image.resolve())
         result.debug_info["input_image_sha256"] = hashlib.sha256(args.image.read_bytes()).hexdigest()
         result.debug_info["input_original_shape"] = original_shape
@@ -56,7 +60,7 @@ def main() -> int:
         if args.ground_truth:
             result.debug_info["ground_truth"] = evaluate_result(
                 result, load_ground_truth(args.ground_truth), args.image.name)
-        exporter = save_debug if args.full_debug else save_compact
+        exporter = save_debug if args.full_debug or recipe.runtime.export=='full_debug' else save_compact
         exporter(result, args.output, config)
         if positive_result is not None:
             from dataclasses import replace

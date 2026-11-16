@@ -119,6 +119,8 @@ def save_overlay(result: PaperCountResult, directory: Path, config: CounterConfi
 
 
 def save_debug(result: PaperCountResult, output: str | Path, config: CounterConfig) -> None:
+    from .exports import save_recipe_metadata
+    save_recipe_metadata(result,output)
     if result.debug_info.get('algorithm')=='narrow_regions':
         from .region_output import save_regions
         return save_regions(result,output,config,full=True)

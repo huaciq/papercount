@@ -17,11 +17,11 @@ def weighted_median(values, weights):
         np.cumsum(np.asarray(weights)[order]), np.sum(weights) / 2)])
 
 
-def stack_bounds(gray):
+def stack_bounds(gray, strict=False):
     """Use sustained wide foreground, excluding small fixtures and black margins.
 
-    Conservative approach: prefer including edge papers over excluding weak background.
-    Background filtering will be handled by post-validation instead.
+    Regions use a bright core plus nearby measured dim edges. The historical
+    permissive envelope remains available to the tracks geometry path.
     """
     h, w = gray.shape
     ratio = min(1., 1200 / max(h, w))
@@ -31,7 +31,47 @@ def stack_bounds(gray):
     if maximum <= 0:
         return (0, 0, w, h), False
 
-    # Use original lenient thresholds - prioritize including all papers
+    if strict:
+        # A low fraction of the brightest pixel includes sensor glow, a lit
+        # fixture, and isolated reflections. Locate the sustained paper mass
+        # from the two intensity populations before expanding its envelope.
+        values = np.clip(small * (255. / max(maximum, 1.)), 0, 255).astype(np.uint8)
+        threshold, _ = cv2.threshold(values, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        foreground = values > threshold
+        occupancy = np.mean(foreground, axis=1)
+        rows = occupancy > .15
+        width = max(3, int(round(small.shape[1] * .04)) | 1)
+        rows = binary_closing(rows, structure=np.ones(width), border_value=0)
+        changes = np.diff(np.r_[False, rows, False].astype(np.int8))
+        intervals = list(zip(np.flatnonzero(changes == 1), np.flatnonzero(changes == -1)))
+        if not intervals:
+            return (0, 0, w, h), False
+        masses = [float(occupancy[a:b].sum()) for a, b in intervals]
+        dominant = max(masses)
+        # Retain multiple substantial paper groups, but not a small bright
+        # fixture separated from the stack by hundreds of background rows.
+        keep = [(a, b) for (a, b), mass in zip(intervals, masses) if mass >= .25 * dominant]
+        top, bottom = keep[0][0], keep[-1][1]
+        # A dim outer sheet can fall below the bright-population threshold.
+        # Extend only to nearby coherent gray edges, rather than growing into
+        # the entire low-threshold glow component that touches the stack.
+        low = values[values <= threshold]
+        high = values[values > threshold]
+        background = float(np.median(low)) if len(low) else 0.
+        contrast = (float(np.median(high)) if len(high) else maximum) - background
+        row_signal = np.percentile(values, 75, axis=1)
+        edge = abs(gaussian_filter1d(row_signal.astype(float), .65, order=1))
+        weak_rows = (edge > max(4., .035 * contrast)) & (row_signal > background + .1 * contrast)
+        margin = max(width, int(round(.25 * (bottom-top))))
+        nearby = np.flatnonzero(weak_rows[max(0, top-margin):min(len(rows), bottom+margin)]) + max(0, top-margin)
+        if len(nearby):
+            top, bottom = min(top, int(nearby[0])), max(bottom, int(nearby[-1])+1)
+        columns = np.flatnonzero(np.mean(foreground[top:bottom], axis=0) > .12)
+        if len(columns) < .15 * small.shape[1]:
+            return (0, 0, w, h), False
+        sx, sy = w / small.shape[1], h / small.shape[0]
+        return (int(columns[0] * sx), int(top * sy), min(w, int(np.ceil((columns[-1]+1)*sx))),
+                min(h, int(np.ceil(bottom*sy)))), True
     foreground = small > .12 * maximum
     rows = np.mean(foreground, axis=1) > .2
     rows = binary_closing(rows, structure=np.ones(max(1, round(len(rows) * .006))), border_value=0)
@@ -145,7 +185,7 @@ def estimate_quarter_turn(gray):
 
 
 def prepare_geometry(image, target_spacing=14., bounded_angle_analysis=False, auto_quarter_turn=False,
-                     center_width=None, preserve_extent=False):
+                     center_width=None, preserve_extent=False, stack_locator=None):
     from .preprocessing import to_gray
     gray = to_gray(image)
     input_shape=list(image.shape)
@@ -157,7 +197,8 @@ def prepare_geometry(image, target_spacing=14., bounded_angle_analysis=False, au
             coarse=np.array([[0.,1.,0.],[-1.,0.,gray.shape[1]-1.],[0.,0.,1.]])
             image=np.rot90(image,1).copy();gray=np.rot90(gray,1).copy()
     h,w = gray.shape
-    bounds, located = stack_bounds(gray)
+    bounds, located = (stack_locator(gray) if stack_locator is not None
+                       else stack_bounds(gray, strict=center_width is not None))
     x1,y1,x2,y2 = bounds
     if not located:
         return image, {'enabled':True,'applied':bool(quarter),'reason':'stack_not_located',
@@ -266,6 +307,11 @@ def prepare_geometry(image, target_spacing=14., bounded_angle_analysis=False, au
         # Update forward transform to include the horizontal crop
         local_forward=np.array([[1.,0.,-left],[0.,1.,0.],[0.,0.,1.]])@local_forward
         ow=actual
+        # Use the full prepared image only to select the analysis window.
+        # Sample the detector image directly with its final composed affine;
+        # a cropped preview can differ at interpolation/border rounding.
+        prepared=cv2.warpAffine(image,local_forward[:2],(ow,oh),flags=cv2.INTER_CUBIC,
+                                borderMode=cv2.BORDER_CONSTANT,borderValue=0)
     else:
         prepared = prepared_full
 

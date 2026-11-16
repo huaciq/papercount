@@ -1,0 +1,16 @@
+schema_version: 1
+recipe_id: tracks_existing_v1
+material_family: generic_layers
+count_unit: paper_edge
+capture_profile: unspecified_v1
+pipeline: tracks_existing_v1
+parameters:
+  profile: e3_3
+  preparation:
+    automatic_geometry: false
+    target_spacing_px: 14.0
+    preserve_extent: true
+    roi_policy: foreground_envelope
+  overrides: {}
+runtime:
+  export: compact

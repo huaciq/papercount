@@ -47,6 +47,7 @@ result2 = detector.detect("另一张.bmp", rotate_ccw=True, output_dir="result/s
 
 ```python
 tracks = PaperDetector(preset="tracks")
+corrugated = PaperDetector(recipe="corrugated_side_v1")  # 瓦楞纸框检测策略
 regions = PaperDetector(preset="regions")
 result = regions.detect("图片.bmp", output_dir="output/regions")
 print(result.count, result.boxes)

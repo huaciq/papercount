@@ -37,6 +37,7 @@ class CounterConfig:
     narrow_width: int = 225
     region_structure: str = 'auto'
     region_signal_mode: str = 'three_strip'
+    region_material: str = 'generic'
     roi: Optional[dict[str, int]] = None
     illumination_sigma: float = 15.0
     epsilon: float = 1e-6
@@ -352,6 +353,10 @@ class CounterConfig:
             raise ValueError('region_structure must be auto, double_bright or single_bright')
         if self.region_signal_mode not in {'global','three_strip'}:
             raise ValueError('region_signal_mode must be global or three_strip')
+        if self.region_material not in {'generic', 'corrugated'}:
+            raise ValueError('region_material must be generic or corrugated')
+        if self.region_material == 'corrugated' and (self.algorithm != 'regions' or self.region_signal_mode != 'three_strip' or self.region_structure != 'auto'):
+            raise ValueError('corrugated material requires regions, three_strip and auto structure')
         if self.narrow_width<16 or self.narrow_width>1024:
             raise ValueError('narrow_width must be between 16 and 1024')
         if self.geometry_target_spacing < 8 or self.geometry_target_spacing > 32:

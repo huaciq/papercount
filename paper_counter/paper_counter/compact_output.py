@@ -18,6 +18,8 @@ def compact_track(track) -> dict:
 
 def save_compact(result, output: str | Path, config) -> None:
     """Export the actual final tracks and coordinate mapping without repeated arrays."""
+    from .exports import save_recipe_metadata
+    save_recipe_metadata(result,output)
     if result.debug_info.get('algorithm')=='narrow_regions':
         from .region_output import save_regions
         return save_regions(result,output,config,full=False)
@@ -31,7 +33,8 @@ def save_compact(result, output: str | Path, config) -> None:
             'median_local_period', 'count', 'detected_peaks', 'repaired_peaks', 'status',
               'warnings', 'confidence', 'count_breakdown', 'evidence_model', 'input_image', 'input_image_sha256',
             'input_original_shape', 'rotation_ccw_degrees', 'coordinate_mapping_to_original',
-            'prediction_provenance', 'ground_truth', 'geometry_preprocessing', 'narrow_detection')
+            'prediction_provenance', 'ground_truth', 'geometry_preprocessing', 'narrow_detection',
+            'pipeline','resolved_recipe')
     data = {key: result.debug_info[key] for key in keys if key in result.debug_info}
     data.update(count=result.count, config=config.to_dict(), render_metadata=metadata,
                 confidence_interpretation='uncalibrated consistency score; not a probability',

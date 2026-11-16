@@ -9,10 +9,11 @@ from typing import Any
 import numpy as np
 
 from .config import CounterConfig
-from .coordinates import detection_to_original
-from .counter import PaperCounter
 from .models import PaperCountResult
 from .preprocessing import read_image
+from .recipe import Recipe,load_config_or_recipe
+from .engine import DetectionEngine
+from .contracts import PaperInstance
 
 
 @dataclass
@@ -31,6 +32,11 @@ class DetectionResult:
     tracks: list[dict[str, Any]]
     raw_result: PaperCountResult = field(repr=False)
     boxes: list[dict[str, Any]] = field(default_factory=list)
+    pipeline_id: str = ''
+    recipe_id: str = ''
+    count_unit: str = ''
+    resolved_recipe: dict[str,Any] = field(default_factory=dict)
+    instances: list[PaperInstance] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-compatible summary, excluding internal image and signal arrays."""
@@ -45,6 +51,9 @@ class DetectionResult:
             "geometry_preprocessing": self.raw_result.debug_info.get('geometry_preprocessing'),
             "tracks": self.tracks,
             "boxes": self.boxes,
+            "pipeline_id": self.pipeline_id,"recipe_id": self.recipe_id,"count_unit": self.count_unit,
+            "resolved_recipe": self.resolved_recipe,
+            "instances": [instance.to_dict() for instance in self.instances],
         })
 
 
@@ -55,21 +64,34 @@ class PaperDetector:
     the existing CLI default. A custom config replaces the preset completely.
     """
 
-    def __init__(self, *, preset: str = "paper_layers_v4",
-                 config: CounterConfig | str | Path | None = None):
-        if config is None:
+    def __init__(self, *, preset: str | None = None,
+                 config: CounterConfig | str | Path | None = None,
+                 recipe: Recipe | str | Path | None = None):
+        self._explicit_recipe=recipe is not None
+        if recipe is not None:
+            if config is not None or preset is not None:
+                raise ValueError('Choose recipe or preset/config, not both')
+            self.recipe=Recipe.load(recipe)
+            self.config=self.recipe.to_counter_config()
+            self.preset=self.recipe.recipe_id
+        elif config is None:
+            preset='paper_layers_v4' if preset is None else preset
             filenames = {"tracks": "default.yaml", "regions": "regions.yaml",
                          "paper_layers_v4": "paper_layers_v4.yaml", "e3_3": "default.yaml",
-                         "tracks_preprocessed": "tracks_preprocessed.yaml"}
+                         "tracks_preprocessed": "tracks_preprocessed.yaml", "corrugated": "corrugated.yaml"}
             if preset not in filenames:
-                raise ValueError(f"Unknown preset: {preset!r}; choose tracks, tracks_preprocessed, regions, paper_layers_v4 or e3_3")
+                raise ValueError(f"Unknown preset: {preset!r}; choose tracks, tracks_preprocessed, regions, corrugated, paper_layers_v4 or e3_3")
             self.config = CounterConfig.from_yaml(Path(__file__).parent / "presets" / filenames[preset])
             self.preset = preset
+            self.recipe=Recipe.from_legacy(self.config,recipe_id=f'preset_{preset}')
         elif isinstance(config, CounterConfig):
             self.config = deepcopy(config)
             self.preset = "custom"
+            self.recipe=Recipe.from_legacy(self.config)
         elif isinstance(config, (str, Path)):
-            self.config = CounterConfig.from_yaml(config)
+            self.recipe=load_config_or_recipe(config)
+            self.config=self.recipe.to_counter_config()
+            self._explicit_recipe=self.recipe.compatibility_config is None
             self.preset = "custom"
         else:
             raise TypeError("config must be CounterConfig, a YAML path, or None")
@@ -94,7 +116,13 @@ class PaperDetector:
         original_shape = tuple(array.shape)
         # Isolate the caller's image from the existing pipeline and result artifacts.
         detection_image = np.rot90(array, 1).copy() if rotate_ccw else array.copy()
-        raw = PaperCounter(self.config).process(detection_image)
+        if self._explicit_recipe:
+            if self.config.to_dict()!=self.recipe.to_counter_config().to_dict():
+                raise ValueError('Edit the recipe parameters instead of the compatibility config')
+            active_recipe=self.recipe
+        else:
+            active_recipe=Recipe.from_legacy(self.config,recipe_id=self.recipe.recipe_id)
+        raw = DetectionEngine(active_recipe).process(detection_image)
         raw.debug_info.update(
             input_original_shape=list(original_shape),
             rotation_ccw_degrees=90 if rotate_ccw else 0,
@@ -102,23 +130,8 @@ class PaperDetector:
         )
         if isinstance(image, (str, Path)):
             raw.debug_info["input_image"] = str(Path(image).resolve())
-        tracks = []
-        strips = raw.debug_info.get("strip_bounds_roi_x", [])
-        for number, track in enumerate(sorted(raw.paper_edge_tracks,
-                                              key=lambda t: (t.center_y, t.track_id)), 1):
-            observations = []
-            for strip, y in sorted(track.strip_positions.items()):
-                left, right = strips[strip]
-                x = raw.debug_info["roi"]["x1"] + (left + right) * 0.5
-                ix, iy = detection_to_original(x, y, 90 if rotate_ccw else 0,
-                                               original_shape[1], original_shape[0],
-                                               raw.debug_info.get('geometry_preprocessing'))
-                observations.append({"strip_index": int(strip), "detection_x": float(x),
-                                     "detection_y": float(y), "input_x": float(ix),
-                                     "input_y": float(iy)})
-            tracks.append({"number": number, "track_id": str(track.track_id),
-                           "center_detection_y": float(track.center_y),
-                           "source": track.source, "observations": observations})
+        from .instances import exported_tracks
+        tracks=exported_tracks(raw,original_shape,90 if rotate_ccw else 0)
         result = DetectionResult(
             count=int(raw.count), confidence=float(raw.confidence),
             status=raw.debug_info["status"], warnings=list(raw.debug_info.get("warnings", [])),
@@ -129,16 +142,25 @@ class PaperDetector:
         if raw.debug_info.get('algorithm')=='narrow_regions':
             from .region_output import box_coordinates
             result.boxes=box_coordinates(raw)
+        from .instances import counted_instances
+        result.pipeline_id=active_recipe.pipeline
+        result.recipe_id=active_recipe.recipe_id
+        result.count_unit=active_recipe.count_unit
+        result.resolved_recipe=active_recipe.to_dict()
+        result.instances=counted_instances(result.count,result.count_unit,result.boxes,result.tracks)
         if output_dir is not None:
             from .compact_output import save_compact
-            save_compact(raw, output_dir, self.config)
+            from .visualization import save_debug
+            exporter=save_debug if active_recipe.runtime.export=='full_debug' else save_compact
+            exporter(raw, output_dir, self.config)
         return result
 
 
 def detect_papers(image: str | Path | np.ndarray, *, rotate_ccw: bool = False,
-                  preset: str = "paper_layers_v4",
+                  preset: str | None = None,
                   config: CounterConfig | str | Path | None = None,
+                  recipe: Recipe | str | Path | None = None,
                   output_dir: str | Path | None = None) -> DetectionResult:
     """One-call entry point; use PaperDetector for repeated calls."""
-    return PaperDetector(preset=preset, config=config).detect(
+    return PaperDetector(preset=preset, config=config,recipe=recipe).detect(
         image, rotate_ccw=rotate_ccw, output_dir=output_dir)

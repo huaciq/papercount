@@ -18,4 +18,4 @@ where = ["."]
 include = ["paper_counter*"]
 
 [tool.setuptools.package-data]
-paper_counter = ["presets/*.yaml"]
+paper_counter = ["presets/*.yaml", "recipes/materials/*.yaml", "recipes/capture/*.yaml"]
